@@ -854,15 +854,16 @@ elif page == "Market Analysis":
                             "trend", "above_sma50", "above_sma200",
                             "pct_from_sma50", "pct_from_sma200"]
             available = [c for c in display_cols if c in summary.columns]
-            st.dataframe(
-                summary[available].style.applymap(
-                    lambda v: "color: green" if v > 0 else ("color: red" if v < 0 else ""),
-                    subset=[c for c in ["rs_value", "rank_change", "pct_from_sma50",
-                                        "pct_from_sma200"] if c in available],
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
+            style_subset = [c for c in ["rs_value", "rank_change", "pct_from_sma50",
+                                        "pct_from_sma200"] if c in available]
+            styled = summary[available]
+            if style_subset:
+                styled = styled.style.map(
+                    lambda v: "color: green" if isinstance(v, (int, float)) and v > 0
+                    else ("color: red" if isinstance(v, (int, float)) and v < 0 else ""),
+                    subset=style_subset,
+                )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
 
             # --- Percentile context ---
             pctile_cols = [c for c in summary.columns if "pctile" in c]
@@ -987,15 +988,16 @@ elif page == "Market Analysis":
                             "trend", "above_sma50", "above_sma200",
                             "pct_from_sma50", "pct_from_sma200"]
             available = [c for c in display_cols if c in summary.columns]
-            st.dataframe(
-                summary[available].style.applymap(
-                    lambda v: "color: green" if v > 0 else ("color: red" if v < 0 else ""),
-                    subset=[c for c in ["rs_value", "rank_change", "pct_from_sma50",
-                                        "pct_from_sma200"] if c in available],
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
+            style_subset = [c for c in ["rs_value", "rank_change", "pct_from_sma50",
+                                        "pct_from_sma200"] if c in available]
+            styled = summary[available]
+            if style_subset:
+                styled = styled.style.map(
+                    lambda v: "color: green" if isinstance(v, (int, float)) and v > 0
+                    else ("color: red" if isinstance(v, (int, float)) and v < 0 else ""),
+                    subset=style_subset,
+                )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
 
             # --- Percentile context ---
             pctile_cols = [c for c in summary.columns if "pctile" in c]
