@@ -15,6 +15,13 @@ import plotly.express as px
 import streamlit as st
 
 from data_fetcher import fetch_price_history, compute_rolling_return, compute_drawdown
+from market_analysis import (
+    SECTOR_ETFS, FACTOR_ETFS, BENCHMARK, RS_WINDOWS,
+    fetch_universe, relative_strength, momentum_ranking,
+    breadth_proxy, breadth_timeseries, percentile_ranks,
+    trend_direction, classify_regime, pairwise_comparison,
+    detect_crossovers, build_summary_table,
+)
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -36,7 +43,7 @@ st.set_page_config(
 st.sidebar.title("Investment Research")
 page = st.sidebar.radio(
     "Module",
-    ["Home", "Historical Analysis", "Watchlist Alerts", "ML Prediction"],
+    ["Home", "Historical Analysis", "Watchlist Alerts", "ML Prediction", "Market Analysis"],
 )
 
 # ===================================================================
@@ -47,7 +54,7 @@ if page == "Home":
     st.title("Investment Research Platform")
     st.markdown("---")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         st.subheader("📜 Historical Analysis")
         st.write(
@@ -62,12 +69,21 @@ if page == "Home":
             "RSI overbought/oversold, Bollinger Band breakouts, MACD crossovers, "
             "volume spikes, 52-week highs/lows, and more."
         )
+
+    col3, col4 = st.columns(2)
     with col3:
         st.subheader("🤖 ML Prediction")
         st.write(
             "Use gradient boosting and LSTM neural networks to predict "
             "future price direction and magnitude. 30+ engineered features "
             "with ensemble consensus forecasts."
+        )
+    with col4:
+        st.subheader("📊 Market Analysis")
+        st.write(
+            "Sector rotation and factor analysis dashboard. Track relative "
+            "strength, momentum rankings, regime classification, and pairwise "
+            "factor comparisons across all major sectors and style factors."
         )
 
     st.markdown("---")
@@ -738,6 +754,349 @@ elif page == "ML Prediction":
             "as the sole basis for investment decisions. Past patterns do not guarantee "
             "future results."
         )
+
+
+# ===================================================================
+# MARKET ANALYSIS PAGE
+# ===================================================================
+
+elif page == "Market Analysis":
+    st.title("Market Analysis Dashboard")
+    st.markdown("Sector rotation and factor analysis with relative strength, "
+                "momentum rankings, regime classification, and pairwise comparisons.")
+
+    # --- Sidebar controls ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Settings")
+    analysis_start = st.sidebar.text_input("History start date", value="2019-01-01",
+                                           key="ma_start")
+    ranking_window = st.sidebar.selectbox(
+        "Ranking / RS window",
+        ["20d", "60d", "252d"],
+        index=1,
+        key="ma_window",
+    )
+    trend_lookback = st.sidebar.slider("Trend lookback (days)", 5, 60, 20,
+                                       key="ma_trend")
+
+    analysis_tab = st.radio(
+        "Section",
+        ["Sector Rotation", "Factor Analysis"],
+        horizontal=True,
+        key="ma_tab",
+    )
+
+    # ---------------------------------------------------------------
+    # SECTOR ROTATION
+    # ---------------------------------------------------------------
+    if analysis_tab == "Sector Rotation":
+        st.subheader("Sector Rotation Analyzer")
+
+        if st.button("Run Sector Analysis", type="primary", key="run_sector"):
+            all_tickers = list(SECTOR_ETFS.keys()) + [BENCHMARK]
+            with st.spinner("Fetching sector ETF data..."):
+                try:
+                    prices = fetch_universe(all_tickers, start=analysis_start)
+                except Exception as e:
+                    st.error(f"Data fetch error: {e}")
+                    st.stop()
+
+            st.session_state["sector_prices"] = prices
+
+            with st.spinner("Computing analytics..."):
+                rs_df = relative_strength(prices, benchmark=BENCHMARK)
+                summary = build_summary_table(prices, rs_df, SECTOR_ETFS,
+                                              ranking_window=ranking_window)
+
+                st.session_state["sector_rs"] = rs_df
+                st.session_state["sector_summary"] = summary
+
+        # Display results if available
+        if "sector_summary" in st.session_state:
+            summary = st.session_state["sector_summary"]
+            rs_df = st.session_state["sector_rs"]
+            prices = st.session_state["sector_prices"]
+
+            # --- Regime classification ---
+            regime = classify_regime(rs_df, window=ranking_window)
+            regime_colors = {
+                "Risk-On": "green", "Risk-Off": "red", "Neutral": "orange",
+            }
+            regime_col1, regime_col2 = st.columns([1, 3])
+            with regime_col1:
+                color = regime_colors.get(regime.classification, "gray")
+                st.markdown(
+                    f"### Regime: :{color}[{regime.classification}]"
+                )
+                st.metric("Net Score", f"{regime.score:+d}")
+            with regime_col2:
+                st.info(regime.detail)
+
+            st.markdown("---")
+
+            # --- Crossover alerts ---
+            crossovers = detect_crossovers(rs_df, window=ranking_window, lookback=5)
+            if crossovers:
+                st.markdown("#### Recent RS Crossovers (last 5 days)")
+                for alert in crossovers:
+                    name = SECTOR_ETFS.get(alert["ticker"], alert["ticker"])
+                    direction = alert["direction"]
+                    icon = "+" if direction == "positive" else "-"
+                    st.write(
+                        f"**{alert['ticker']}** ({name}): crossed to "
+                        f"**{direction}** RS on {alert['cross_date']}"
+                    )
+                st.markdown("---")
+
+            # --- Summary table ---
+            st.markdown("#### Sector Rankings")
+            display_cols = ["rank", "ticker", "name", "rs_value", "rank_change",
+                            "trend", "above_sma50", "above_sma200",
+                            "pct_from_sma50", "pct_from_sma200"]
+            available = [c for c in display_cols if c in summary.columns]
+            st.dataframe(
+                summary[available].style.applymap(
+                    lambda v: "color: green" if v > 0 else ("color: red" if v < 0 else ""),
+                    subset=[c for c in ["rs_value", "rank_change", "pct_from_sma50",
+                                        "pct_from_sma200"] if c in available],
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # --- Percentile context ---
+            pctile_cols = [c for c in summary.columns if "pctile" in c]
+            if pctile_cols:
+                st.markdown("#### Percentile Context (current RS vs history)")
+                pctile_display = summary[["ticker", "name"] + pctile_cols].copy()
+                st.dataframe(pctile_display, use_container_width=True, hide_index=True)
+
+            # --- Heatmap ---
+            st.markdown("#### Relative Strength Heatmap")
+            heatmap_window = st.selectbox("Heatmap window", ["20d", "60d", "252d"],
+                                          index=1, key="sector_hm_window")
+            sector_tickers = [t for t in SECTOR_ETFS.keys()
+                              if t in rs_df.columns.get_level_values("ticker")]
+            if sector_tickers:
+                hm_series = rs_df.xs(heatmap_window, level="window", axis=1)
+                hm_data = hm_series[sector_tickers].iloc[-60:]
+                hm_data.columns = [f"{t} ({SECTOR_ETFS[t]})" for t in hm_data.columns]
+                fig_hm = go.Figure(data=go.Heatmap(
+                    z=hm_data.T.values,
+                    x=hm_data.index.strftime("%Y-%m-%d"),
+                    y=hm_data.columns.tolist(),
+                    colorscale="RdYlGn",
+                    zmid=0,
+                    colorbar_title="RS",
+                ))
+                fig_hm.update_layout(height=450, xaxis_title="Date",
+                                     yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_hm, use_container_width=True)
+
+            # --- Breadth over time ---
+            st.markdown("#### Sector Breadth Over Time")
+            sector_prices_only = prices[[t for t in SECTOR_ETFS.keys()
+                                         if t in prices.columns]]
+            bts = breadth_timeseries(sector_prices_only)
+            fig_bt = go.Figure()
+            fig_bt.add_trace(go.Scatter(
+                x=bts.index, y=bts["above_sma50_pct"],
+                name="Above 50d SMA", line=dict(color="steelblue"),
+            ))
+            fig_bt.add_trace(go.Scatter(
+                x=bts.index, y=bts["above_sma200_pct"],
+                name="Above 200d SMA", line=dict(color="orange"),
+            ))
+            fig_bt.add_hline(y=50, line_dash="dot", line_color="gray")
+            fig_bt.update_layout(
+                height=350, yaxis_title="% of Sectors",
+                yaxis=dict(range=[0, 105]),
+            )
+            st.plotly_chart(fig_bt, use_container_width=True)
+
+            # --- Export ---
+            csv = summary.to_csv(index=False)
+            st.download_button(
+                "Export Sector Data (CSV)", csv,
+                file_name="sector_rotation.csv", mime="text/csv",
+            )
+
+    # ---------------------------------------------------------------
+    # FACTOR ANALYSIS
+    # ---------------------------------------------------------------
+    elif analysis_tab == "Factor Analysis":
+        st.subheader("Factor Analyzer")
+
+        if st.button("Run Factor Analysis", type="primary", key="run_factor"):
+            all_tickers = list(FACTOR_ETFS.keys())
+            if BENCHMARK not in all_tickers:
+                all_tickers.append(BENCHMARK)
+            with st.spinner("Fetching factor ETF data..."):
+                try:
+                    prices = fetch_universe(all_tickers, start=analysis_start)
+                except Exception as e:
+                    st.error(f"Data fetch error: {e}")
+                    st.stop()
+
+            st.session_state["factor_prices"] = prices
+
+            with st.spinner("Computing analytics..."):
+                rs_df = relative_strength(prices, benchmark=BENCHMARK)
+                summary = build_summary_table(prices, rs_df, FACTOR_ETFS,
+                                              ranking_window=ranking_window)
+                st.session_state["factor_rs"] = rs_df
+                st.session_state["factor_summary"] = summary
+
+        if "factor_summary" in st.session_state:
+            summary = st.session_state["factor_summary"]
+            rs_df = st.session_state["factor_rs"]
+            prices = st.session_state["factor_prices"]
+
+            # --- Regime ---
+            regime = classify_regime(rs_df, window=ranking_window)
+            regime_colors = {
+                "Risk-On": "green", "Risk-Off": "red", "Neutral": "orange",
+            }
+            regime_col1, regime_col2 = st.columns([1, 3])
+            with regime_col1:
+                color = regime_colors.get(regime.classification, "gray")
+                st.markdown(
+                    f"### Regime: :{color}[{regime.classification}]"
+                )
+                st.metric("Net Score", f"{regime.score:+d}")
+            with regime_col2:
+                st.info(regime.detail)
+
+            st.markdown("---")
+
+            # --- Crossover alerts ---
+            crossovers = detect_crossovers(rs_df, window=ranking_window, lookback=5)
+            if crossovers:
+                st.markdown("#### Recent RS Crossovers (last 5 days)")
+                for alert in crossovers:
+                    name = FACTOR_ETFS.get(alert["ticker"], alert["ticker"])
+                    st.write(
+                        f"**{alert['ticker']}** ({name}): crossed to "
+                        f"**{alert['direction']}** RS on {alert['cross_date']}"
+                    )
+                st.markdown("---")
+
+            # --- Summary table ---
+            st.markdown("#### Factor Rankings")
+            display_cols = ["rank", "ticker", "name", "rs_value", "rank_change",
+                            "trend", "above_sma50", "above_sma200",
+                            "pct_from_sma50", "pct_from_sma200"]
+            available = [c for c in display_cols if c in summary.columns]
+            st.dataframe(
+                summary[available].style.applymap(
+                    lambda v: "color: green" if v > 0 else ("color: red" if v < 0 else ""),
+                    subset=[c for c in ["rs_value", "rank_change", "pct_from_sma50",
+                                        "pct_from_sma200"] if c in available],
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # --- Percentile context ---
+            pctile_cols = [c for c in summary.columns if "pctile" in c]
+            if pctile_cols:
+                st.markdown("#### Percentile Context (current RS vs history)")
+                pctile_display = summary[["ticker", "name"] + pctile_cols].copy()
+                st.dataframe(pctile_display, use_container_width=True, hide_index=True)
+
+            # --- Heatmap ---
+            st.markdown("#### Relative Strength Heatmap")
+            heatmap_window = st.selectbox("Heatmap window", ["20d", "60d", "252d"],
+                                          index=1, key="factor_hm_window")
+            factor_tickers = [t for t in FACTOR_ETFS.keys()
+                              if t != BENCHMARK
+                              and t in rs_df.columns.get_level_values("ticker")]
+            if factor_tickers:
+                hm_series = rs_df.xs(heatmap_window, level="window", axis=1)
+                hm_data = hm_series[factor_tickers].iloc[-60:]
+                hm_data.columns = [f"{t} ({FACTOR_ETFS[t]})" for t in hm_data.columns]
+                fig_hm = go.Figure(data=go.Heatmap(
+                    z=hm_data.T.values,
+                    x=hm_data.index.strftime("%Y-%m-%d"),
+                    y=hm_data.columns.tolist(),
+                    colorscale="RdYlGn",
+                    zmid=0,
+                    colorbar_title="RS",
+                ))
+                fig_hm.update_layout(height=450, xaxis_title="Date",
+                                     yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_hm, use_container_width=True)
+
+            # --- Breadth over time ---
+            st.markdown("#### Factor Breadth Over Time")
+            factor_prices_only = prices[[t for t in FACTOR_ETFS.keys()
+                                         if t in prices.columns]]
+            bts = breadth_timeseries(factor_prices_only)
+            fig_bt = go.Figure()
+            fig_bt.add_trace(go.Scatter(
+                x=bts.index, y=bts["above_sma50_pct"],
+                name="Above 50d SMA", line=dict(color="steelblue"),
+            ))
+            fig_bt.add_trace(go.Scatter(
+                x=bts.index, y=bts["above_sma200_pct"],
+                name="Above 200d SMA", line=dict(color="orange"),
+            ))
+            fig_bt.add_hline(y=50, line_dash="dot", line_color="gray")
+            fig_bt.update_layout(
+                height=350, yaxis_title="% of Factors",
+                yaxis=dict(range=[0, 105]),
+            )
+            st.plotly_chart(fig_bt, use_container_width=True)
+
+            # --- Pairwise comparison ---
+            st.markdown("---")
+            st.markdown("#### Pairwise Factor Comparison")
+            all_factor_tickers = [t for t in FACTOR_ETFS.keys()
+                                  if t in prices.columns]
+            pw_col1, pw_col2 = st.columns(2)
+            with pw_col1:
+                ticker_a = st.selectbox("Factor A", all_factor_tickers,
+                                        index=0, key="pw_a")
+            with pw_col2:
+                default_b = min(1, len(all_factor_tickers) - 1)
+                ticker_b = st.selectbox("Factor B", all_factor_tickers,
+                                        index=default_b, key="pw_b")
+
+            if ticker_a != ticker_b:
+                pw = pairwise_comparison(prices, ticker_a, ticker_b,
+                                         trend_window=trend_lookback)
+                pw_col1, pw_col2, pw_col3 = st.columns(3)
+                pw_col1.metric("Current Spread",
+                               f"{pw.current_spread:+.2%}")
+                pw_col2.metric("Trend", pw.spread_trend)
+                pw_col3.metric("Slope", f"{pw.spread_slope:+.6f}")
+
+                fig_pw = go.Figure()
+                fig_pw.add_trace(go.Scatter(
+                    x=pw.spread.index, y=pw.spread.values,
+                    mode="lines",
+                    name=f"{ticker_a} - {ticker_b} spread",
+                    line=dict(color="mediumpurple"),
+                ))
+                fig_pw.add_hline(y=0, line_dash="dot", line_color="gray")
+                fig_pw.update_layout(
+                    title=f"Cumulative Return Spread: "
+                          f"{ticker_a} ({FACTOR_ETFS.get(ticker_a, '')}) vs "
+                          f"{ticker_b} ({FACTOR_ETFS.get(ticker_b, '')})",
+                    height=400,
+                    xaxis_title="Date",
+                    yaxis_title="Spread (cumulative return)",
+                )
+                st.plotly_chart(fig_pw, use_container_width=True)
+            else:
+                st.warning("Select two different factors to compare.")
+
+            # --- Export ---
+            csv = summary.to_csv(index=False)
+            st.download_button(
+                "Export Factor Data (CSV)", csv,
+                file_name="factor_analysis.csv", mime="text/csv",
+            )
 
 
 # ---------------------------------------------------------------------------
