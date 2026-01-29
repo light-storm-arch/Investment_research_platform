@@ -18,7 +18,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import ta
 
 from data_fetcher import fetch_price_history
 
@@ -80,17 +79,28 @@ class TickerReport:
 # ---------------------------------------------------------------------------
 
 def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
-    return ta.momentum.RSIIndicator(close, window=window).rsi()
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(window).mean()
+    loss = (-delta.clip(upper=0)).rolling(window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
 
 def compute_bollinger(close: pd.Series, window: int = 20, std_dev: float = 2.0):
-    bb = ta.volatility.BollingerBands(close, window=window, window_dev=std_dev)
-    return bb.bollinger_hband(), bb.bollinger_mavg(), bb.bollinger_lband()
+    sma = close.rolling(window).mean()
+    std = close.rolling(window).std()
+    upper = sma + std_dev * std
+    lower = sma - std_dev * std
+    return upper, sma, lower
 
 
 def compute_macd(close: pd.Series):
-    macd_ind = ta.trend.MACD(close)
-    return macd_ind.macd(), macd_ind.macd_signal(), macd_ind.macd_diff()
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
 
 
 def compute_volume_ratio(volume: pd.Series, window: int = 20) -> pd.Series:

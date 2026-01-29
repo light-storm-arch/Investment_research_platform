@@ -45,6 +45,22 @@ export FRED_API_KEY=your_key_here
 
 ## Usage
 
+### Web Interface (Streamlit)
+
+```bash
+streamlit run app.py
+```
+
+This launches an interactive dashboard in your browser with:
+- Sidebar navigation between all three modules
+- Interactive charts (Plotly) for price data, indicators, and results
+- Configurable parameters for each study/scan/prediction
+- Color-coded alerts, RSI heatmaps, Bollinger Band overlays, and more
+
+To deploy publicly, push to GitHub and connect to [Streamlit Community Cloud](https://share.streamlit.io).
+
+### CLI Interface
+
 ```bash
 # Interactive menu
 python main.py
@@ -61,6 +77,7 @@ python main.py -v alerts
 ## Project Structure
 
 ```
+├── app.py                  # Streamlit web interface
 ├── main.py                 # CLI entry point and interactive menus
 ├── data_fetcher.py         # Data layer (Yahoo Finance, FRED)
 ├── historical_analysis.py  # Module 1: pattern studies
