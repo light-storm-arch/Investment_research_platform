@@ -19,6 +19,7 @@ from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegress
 from sklearn.metrics import accuracy_score, mean_squared_error, classification_report
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 
 from data_fetcher import fetch_price_history
 
@@ -120,6 +121,8 @@ class GBModelResult:
     latest_prediction_direction: int
     latest_prediction_return: float
     classification_report: str
+    baseline_report: str
+    direction_threshold: float = 0.5
     cv_scores: list[float] = field(default_factory=list)
 
 
@@ -129,8 +132,17 @@ def train_gradient_boosting(
     start: str = "2000-01-01",
     test_fraction: float = 0.2,
     n_splits: int = 5,
+    direction_threshold: float = 0.5,
 ) -> GBModelResult:
-    """Train gradient boosting models for direction and magnitude prediction."""
+    """Train gradient boosting models for direction and magnitude prediction.
+
+    Parameters
+    ----------
+    direction_threshold : float
+        Probability threshold for predicting "Up" (class 1).  Lower values
+        make Down predictions more frequent, improving Down recall at the
+        cost of Up precision.  Default 0.5.
+    """
     df = fetch_price_history(ticker, start=start)
     features_df = engineer_features(df, forward_days=forward_days)
 
@@ -148,6 +160,9 @@ def train_gradient_boosting(
     X_train_s = scaler.fit_transform(X_train)
     X_test_s = scaler.transform(X_test)
 
+    # Compute balanced sample weights to address class imbalance
+    sample_weights = compute_sample_weight("balanced", y_dir_train)
+
     # Direction classifier
     clf = GradientBoostingClassifier(
         n_estimators=200,
@@ -156,20 +171,26 @@ def train_gradient_boosting(
         subsample=0.8,
         random_state=42,
     )
-    clf.fit(X_train_s, y_dir_train)
-    dir_pred = clf.predict(X_test_s)
+    clf.fit(X_train_s, y_dir_train, sample_weight=sample_weights)
+
+    # Use threshold-adjusted predictions instead of default 0.5
+    dir_proba = clf.predict_proba(X_test_s)[:, 1]
+    dir_pred = (dir_proba >= direction_threshold).astype(int)
     dir_acc = accuracy_score(y_dir_test, dir_pred)
 
-    # Time-series cross-validation
+    # Time-series cross-validation (also with balanced weights + threshold)
     cv_scores = []
     tscv = TimeSeriesSplit(n_splits=n_splits)
     for train_idx, val_idx in tscv.split(X_train_s):
+        cv_weights = compute_sample_weight("balanced", y_dir_train[train_idx])
         clf_cv = GradientBoostingClassifier(
             n_estimators=200, max_depth=4, learning_rate=0.05,
             subsample=0.8, random_state=42,
         )
-        clf_cv.fit(X_train_s[train_idx], y_dir_train[train_idx])
-        cv_scores.append(accuracy_score(y_dir_train[val_idx], clf_cv.predict(X_train_s[val_idx])))
+        clf_cv.fit(X_train_s[train_idx], y_dir_train[train_idx], sample_weight=cv_weights)
+        cv_proba = clf_cv.predict_proba(X_train_s[val_idx])[:, 1]
+        cv_pred = (cv_proba >= direction_threshold).astype(int)
+        cv_scores.append(accuracy_score(y_dir_train[val_idx], cv_pred))
 
     # Magnitude regressor
     reg = GradientBoostingRegressor(
@@ -189,10 +210,19 @@ def train_gradient_boosting(
 
     # Latest prediction
     latest_X = scaler.transform(X[-1:])
-    latest_dir = int(clf.predict(latest_X)[0])
+    latest_proba = clf.predict_proba(latest_X)[:, 1]
+    latest_dir = int(latest_proba[0] >= direction_threshold)
     latest_ret = float(reg.predict(latest_X)[0])
 
-    cls_report = classification_report(y_dir_test, dir_pred, target_names=["Down", "Up"])
+    cls_report = classification_report(
+        y_dir_test, dir_pred, target_names=["Down", "Up"], zero_division=0,
+    )
+
+    # Naive baseline: always predict Up
+    baseline_pred = np.ones_like(y_dir_test)
+    baseline_report = classification_report(
+        y_dir_test, baseline_pred, target_names=["Down", "Up"], zero_division=0,
+    )
 
     return GBModelResult(
         ticker=ticker,
@@ -202,6 +232,8 @@ def train_gradient_boosting(
         latest_prediction_direction=latest_dir,
         latest_prediction_return=round(latest_ret, 4),
         classification_report=cls_report,
+        baseline_report=baseline_report,
+        direction_threshold=direction_threshold,
         cv_scores=cv_scores,
     )
 
@@ -215,8 +247,12 @@ class LSTMModelResult:
     ticker: str
     direction_accuracy: float
     train_loss_history: list[float]
+    val_loss_history: list[float]
     latest_prediction_direction: int
     latest_prediction_return: float
+    prediction_note: str = ""
+    stopped_early: bool = False
+    best_epoch: int = 0
 
 
 def train_lstm(
@@ -230,8 +266,24 @@ def train_lstm(
     batch_size: int = 64,
     learning_rate: float = 0.001,
     test_fraction: float = 0.2,
+    val_fraction: float = 0.1,
+    patience: int = 10,
+    return_loss_weight: float = 0.5,
 ) -> LSTMModelResult:
-    """Train an LSTM model for price direction prediction."""
+    """Train an LSTM model for price direction and return prediction.
+
+    Parameters
+    ----------
+    val_fraction : float
+        Fraction of *training* data held out for validation / early stopping.
+    patience : int
+        Stop training if validation loss does not improve for this many epochs.
+    return_loss_weight : float
+        Weight for the MSE return loss relative to the BCE direction loss
+        (combined loss = BCE + return_loss_weight * MSE).
+    """
+    import copy
+
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
@@ -259,17 +311,29 @@ def train_lstm(
     y_dir_seq = np.array(y_dir_seq, dtype=np.float32)
     y_ret_seq = np.array(y_ret_seq, dtype=np.float32)
 
-    split = int(len(X_seq) * (1 - test_fraction))
-    X_train, X_test = X_seq[:split], X_seq[split:]
-    y_dir_train, y_dir_test = y_dir_seq[:split], y_dir_seq[split:]
+    # Three-way split: train / validation / test (all chronological)
+    test_split = int(len(X_seq) * (1 - test_fraction))
+    val_split = int(test_split * (1 - val_fraction))
+
+    X_train, X_val, X_test = X_seq[:val_split], X_seq[val_split:test_split], X_seq[test_split:]
+    y_dir_train = y_dir_seq[:val_split]
+    y_dir_val = y_dir_seq[val_split:test_split]
+    y_dir_test = y_dir_seq[test_split:]
+    y_ret_train = y_ret_seq[:val_split]
+    y_ret_val = y_ret_seq[val_split:test_split]
 
     # PyTorch datasets
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_ds = TensorDataset(
-        torch.tensor(X_train), torch.tensor(y_dir_train),
+        torch.tensor(X_train), torch.tensor(y_dir_train), torch.tensor(y_ret_train),
     )
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
+
+    val_ds = TensorDataset(
+        torch.tensor(X_val), torch.tensor(y_dir_val), torch.tensor(y_ret_val),
+    )
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     # Model definition
     class LSTMPredictor(nn.Module):
@@ -293,27 +357,65 @@ def train_lstm(
     criterion_ret = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    # Training
-    loss_history = []
-    model.train()
-    for epoch in range(epochs):
-        epoch_loss = 0.0
-        for xb, yb_dir in train_loader:
-            xb = xb.to(device)
-            yb_dir = yb_dir.to(device)
+    # Training with validation tracking and early stopping
+    train_loss_history = []
+    val_loss_history = []
+    best_val_loss = float("inf")
+    best_epoch = 0
+    best_state = None
+    epochs_without_improvement = 0
 
-            dir_out, _ = model(xb)
-            loss = criterion_dir(dir_out, yb_dir)
+    for epoch in range(epochs):
+        # --- Train ---
+        model.train()
+        epoch_loss = 0.0
+        for xb, yb_dir, yb_ret in train_loader:
+            xb, yb_dir, yb_ret = xb.to(device), yb_dir.to(device), yb_ret.to(device)
+
+            dir_out, ret_out = model(xb)
+            loss = criterion_dir(dir_out, yb_dir) + return_loss_weight * criterion_ret(ret_out, yb_ret)
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
 
-        avg_loss = epoch_loss / len(train_loader)
-        loss_history.append(avg_loss)
+        avg_train = epoch_loss / len(train_loader)
+        train_loss_history.append(avg_train)
+
+        # --- Validate ---
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for xb, yb_dir, yb_ret in val_loader:
+                xb, yb_dir, yb_ret = xb.to(device), yb_dir.to(device), yb_ret.to(device)
+                dir_out, ret_out = model(xb)
+                loss = criterion_dir(dir_out, yb_dir) + return_loss_weight * criterion_ret(ret_out, yb_ret)
+                val_loss += loss.item()
+
+        avg_val = val_loss / len(val_loader)
+        val_loss_history.append(avg_val)
+
         if (epoch + 1) % 10 == 0:
-            logger.info("Epoch %d/%d  loss=%.4f", epoch + 1, epochs, avg_loss)
+            logger.info("Epoch %d/%d  train=%.4f  val=%.4f", epoch + 1, epochs, avg_train, avg_val)
+
+        # Early stopping check
+        if avg_val < best_val_loss:
+            best_val_loss = avg_val
+            best_epoch = epoch + 1
+            best_state = copy.deepcopy(model.state_dict())
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= patience:
+                logger.info("Early stopping at epoch %d (best epoch: %d)", epoch + 1, best_epoch)
+                break
+
+    stopped_early = epochs_without_improvement >= patience
+
+    # Restore best model
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     # Evaluation
     model.eval()
@@ -326,15 +428,39 @@ def train_lstm(
         # Latest prediction
         latest = torch.tensor(X_seq[-1:]).to(device)
         lat_dir, lat_ret = model(latest)
-        latest_dir = int(lat_dir.cpu().numpy()[0] > 0.5)
+        latest_dir_prob = float(lat_dir.cpu().numpy()[0])
+        latest_dir = int(latest_dir_prob > 0.5)
         latest_ret = float(lat_ret.cpu().numpy()[0])
+
+    # Check for direction/return disagreement
+    prediction_note = ""
+    if latest_dir == 1 and latest_ret < 0:
+        prediction_note = (
+            "The direction head predicts Up but the return head predicts a negative "
+            f"return ({latest_ret:+.2%}). The direction head (probability: "
+            f"{latest_dir_prob:.1%}) is the primary trained objective and is generally "
+            "more reliable. The return head provides magnitude context but may lag "
+            "behind the classifier when the signal is weak."
+        )
+    elif latest_dir == 0 and latest_ret > 0:
+        prediction_note = (
+            "The direction head predicts Down but the return head predicts a positive "
+            f"return ({latest_ret:+.2%}). The direction head (probability: "
+            f"{1 - latest_dir_prob:.1%} Down) is the primary trained objective and is "
+            "generally more reliable. The return head provides magnitude context but "
+            "may lag behind the classifier when the signal is weak."
+        )
 
     return LSTMModelResult(
         ticker=ticker,
         direction_accuracy=round(dir_acc, 4),
-        train_loss_history=loss_history,
+        train_loss_history=train_loss_history,
+        val_loss_history=val_loss_history,
         latest_prediction_direction=latest_dir,
         latest_prediction_return=round(latest_ret, 4),
+        prediction_note=prediction_note,
+        stopped_early=stopped_early,
+        best_epoch=best_epoch,
     )
 
 
@@ -371,7 +497,8 @@ def run_ensemble(
         # Placeholder if LSTM training is skipped
         lstm_result = LSTMModelResult(
             ticker=ticker, direction_accuracy=0.0,
-            train_loss_history=[], latest_prediction_direction=-1,
+            train_loss_history=[], val_loss_history=[],
+            latest_prediction_direction=-1,
             latest_prediction_return=0.0,
         )
 

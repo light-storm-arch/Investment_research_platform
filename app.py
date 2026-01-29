@@ -562,9 +562,15 @@ elif page == "ML Prediction":
     pred_start = st.sidebar.text_input("Training start date", value="2000-01-01")
     use_lstm = st.sidebar.checkbox("Include LSTM neural network (slower)", value=False)
 
+    direction_threshold = st.sidebar.slider(
+        "Direction threshold",
+        0.3, 0.7, 0.5, 0.05,
+        help="Probability threshold for predicting Up. Lower values improve Down recall.",
+    )
     if use_lstm:
         lstm_epochs = st.sidebar.slider("LSTM epochs", 10, 100, 30)
         lstm_hidden = st.sidebar.slider("LSTM hidden size", 32, 128, 64)
+        lstm_patience = st.sidebar.slider("Early stopping patience", 3, 30, 10)
 
     if st.button("Run Prediction", type="primary"):
 
@@ -576,14 +582,17 @@ elif page == "ML Prediction":
                     pred_ticker,
                     forward_days=forward_days,
                     start=pred_start,
+                    direction_threshold=direction_threshold,
                 )
 
                 col1, col2, col3 = st.columns(3)
                 dir_label = "UP" if gb_result.latest_prediction_direction == 1 else "DOWN"
-                dir_color = "green" if gb_result.latest_prediction_direction == 1 else "red"
                 col1.metric("Predicted Direction", dir_label)
                 col2.metric("Predicted Return", f"{gb_result.latest_prediction_return:+.2%}")
                 col3.metric("Test Accuracy", f"{gb_result.direction_accuracy:.1%}")
+
+                if direction_threshold != 0.5:
+                    st.caption(f"Using direction threshold: {direction_threshold:.2f}")
 
                 # CV scores
                 if gb_result.cv_scores:
@@ -591,9 +600,15 @@ elif page == "ML Prediction":
                     cv_std = np.std(gb_result.cv_scores)
                     st.info(f"Cross-validation accuracy: {cv_mean:.1%} ± {cv_std:.1%} (5-fold time-series split)")
 
-                # Classification report
-                with st.expander("Classification Report"):
-                    st.text(gb_result.classification_report)
+                # Classification report with baseline comparison
+                with st.expander("Classification Report (Model vs Baseline)"):
+                    col_model, col_base = st.columns(2)
+                    with col_model:
+                        st.markdown("**Model (balanced weights)**")
+                        st.text(gb_result.classification_report)
+                    with col_base:
+                        st.markdown("**Naive baseline (always Up)**")
+                        st.text(gb_result.baseline_report)
 
                 # Feature importance chart
                 st.markdown("#### Top 20 Feature Importances")
@@ -629,6 +644,7 @@ elif page == "ML Prediction":
                         start=pred_start,
                         epochs=lstm_epochs,
                         hidden_size=lstm_hidden,
+                        patience=lstm_patience,
                     )
 
                     col1, col2, col3 = st.columns(3)
@@ -637,7 +653,14 @@ elif page == "ML Prediction":
                     col2.metric("Predicted Return", f"{lstm_result.latest_prediction_return:+.2%}")
                     col3.metric("Test Accuracy", f"{lstm_result.direction_accuracy:.1%}")
 
-                    # Training loss chart
+                    if lstm_result.stopped_early:
+                        st.info(f"Early stopping triggered. Best model from epoch {lstm_result.best_epoch}.")
+
+                    # Prediction disagreement note
+                    if lstm_result.prediction_note:
+                        st.warning(lstm_result.prediction_note)
+
+                    # Training + validation loss chart
                     fig_loss = go.Figure()
                     fig_loss.add_trace(go.Scatter(
                         y=lstm_result.train_loss_history,
@@ -645,10 +668,22 @@ elif page == "ML Prediction":
                         name="Training Loss",
                         line=dict(color="orange"),
                     ))
+                    fig_loss.add_trace(go.Scatter(
+                        y=lstm_result.val_loss_history,
+                        mode="lines",
+                        name="Validation Loss",
+                        line=dict(color="red", dash="dash"),
+                    ))
+                    if lstm_result.best_epoch > 0:
+                        fig_loss.add_vline(
+                            x=lstm_result.best_epoch - 1,
+                            line_dash="dot", line_color="gray",
+                            annotation_text=f"Best epoch ({lstm_result.best_epoch})",
+                        )
                     fig_loss.update_layout(
-                        title="LSTM Training Loss",
+                        title="LSTM Training & Validation Loss",
                         xaxis_title="Epoch",
-                        yaxis_title="Loss (BCE)",
+                        yaxis_title="Loss (BCE + MSE)",
                         height=350,
                     )
                     st.plotly_chart(fig_loss, use_container_width=True)
