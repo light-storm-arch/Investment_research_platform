@@ -1,24 +1,18 @@
 """
 Data fetching layer for the investment research platform.
-Pulls price data from Yahoo Finance (via direct API) and economic data from FRED.
+Pulls price data from Yahoo Finance (via yfinance) and economic data from FRED.
 """
 
 import datetime
-import io
 import logging
 import time
 from typing import Optional
 
 import numpy as np
 import pandas as pd
-import requests
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
-
-_SESSION = requests.Session()
-_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-})
 
 
 def fetch_price_history(
@@ -32,29 +26,18 @@ def fetch_price_history(
 
     logger.info("Fetching %s from %s to %s", ticker, start, end)
 
-    # Convert dates to Unix timestamps
-    start_ts = int(datetime.datetime.strptime(start, "%Y-%m-%d").timestamp())
-    end_ts = int(datetime.datetime.strptime(end, "%Y-%m-%d").timestamp()) + 86400
-
-    url = (
-        f"https://query1.finance.yahoo.com/v7/finance/download/{ticker}"
-        f"?period1={start_ts}&period2={end_ts}&interval=1d&events=history"
-    )
-
     for attempt in range(3):
         try:
-            resp = _SESSION.get(url, timeout=30)
-            resp.raise_for_status()
+            tk = yf.Ticker(ticker)
+            df = tk.history(start=start, end=end, auto_adjust=True)
             break
-        except requests.RequestException as e:
+        except Exception as e:
             if attempt < 2:
                 time.sleep(2 ** attempt)
                 continue
             raise ValueError(f"Failed to fetch {ticker}: {e}") from e
 
-    df = pd.read_csv(io.StringIO(resp.text), parse_dates=["Date"], index_col="Date")
-
-    if df.empty:
+    if df is None or df.empty:
         raise ValueError(f"No data returned for {ticker}")
 
     # Ensure expected columns exist
@@ -69,17 +52,13 @@ def fetch_price_history(
     for col in ["Open", "High", "Low", "Close", "Volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df.index = pd.to_datetime(df.index)
-    df.sort_index(inplace=True)
+    # Drop extra columns added by yfinance (Dividends, Stock Splits)
+    df = df[["Open", "High", "Low", "Close", "Volume"]]
 
-    # Adjust for splits/dividends if Adj Close is present
-    if "Adj Close" in df.columns:
-        adj = pd.to_numeric(df["Adj Close"], errors="coerce")
-        ratio = adj / df["Close"]
-        ratio = ratio.fillna(1.0)
-        for col in ["Open", "High", "Low", "Close"]:
-            df[col] = df[col] * ratio
-        df.drop(columns=["Adj Close"], inplace=True, errors="ignore")
+    df.index = pd.to_datetime(df.index)
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+    df.sort_index(inplace=True)
 
     return df
 
