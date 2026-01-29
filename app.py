@@ -20,7 +20,7 @@ from market_analysis import (
     fetch_universe, relative_strength, momentum_ranking,
     breadth_proxy, breadth_timeseries, percentile_ranks,
     trend_direction, classify_regime, pairwise_comparison,
-    detect_crossovers, build_summary_table,
+    detect_crossovers, build_summary_table, constituent_breadth,
 )
 
 logging.basicConfig(level=logging.WARNING)
@@ -765,6 +765,48 @@ elif page == "Market Analysis":
     st.markdown("Sector rotation and factor analysis with relative strength, "
                 "momentum rankings, regime classification, and pairwise comparisons.")
 
+    # --- Methodology documentation ---
+    with st.expander("How calculations work"):
+        st.markdown("""
+**Relative Strength (RS)** measures an ETF's excess return over SPY for a
+rolling window.  For example, the 60-day RS of XLK is:
+
+> RS = (XLK 60-day return) - (SPY 60-day return)
+
+A positive value means the ETF outperformed SPY over that period; a negative
+value means it underperformed.
+
+**Momentum Ranking** sorts all sectors (or factors) by their current RS value
+for the selected window.  *Rank Change* shows how many positions the ETF moved
+up (+) or down (-) compared to 20 trading days ago.
+
+**Breadth Proxy** checks whether each ETF's price is above its own 50-day
+and 200-day simple moving average (SMA).  *% from SMA* shows how far the
+current price is from each average.  Use the **Constituent Breadth** drill-down
+below the summary table to see the same metrics for the individual stocks held
+inside a specific ETF.
+
+**Percentile Context** answers: "How does today's RS compare to its own
+history?"  A reading at the 90th percentile of its 1-year range means the
+ETF's relative strength is higher than 90% of all readings in the past year.
+
+**Trend Direction** fits a simple linear regression (OLS slope) over the last
+N trading days of the RS series.  Classified as *Increasing*, *Decreasing*, or
+*Flat* depending on whether the slope exceeds a small threshold.
+
+**Regime Classification** scores the market environment:
+- +1 for each risk-on ETF (IWM, VWO, XLY, XLF, XLK, MTUM, IWF) with positive RS
+- -1 for each risk-off ETF (XLU, XLP, USMV, VYM, XLV, IWD, XLRE) with positive RS
+- Net score >= +2 = **Risk-On**, <= -2 = **Risk-Off**, else **Neutral**
+
+**Pairwise Comparison** (Factor tab only) computes the cumulative return
+spread between two ETFs and fits a 20-day slope to determine whether the
+spread is widening toward one side or flat.
+
+**Crossover Alerts** flag any ETF whose RS crossed from negative to positive
+(or vice versa) in the last 5 trading days.
+""")
+
     # --- Sidebar controls ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("Settings")
@@ -785,6 +827,11 @@ elif page == "Market Analysis":
         horizontal=True,
         key="ma_tab",
     )
+
+    # helper: format selectbox labels as "TICKER (Name)"
+    def _etf_label(ticker: str, names: dict[str, str]) -> str:
+        name = names.get(ticker, "")
+        return f"{ticker} ({name})" if name else ticker
 
     # ---------------------------------------------------------------
     # SECTOR ROTATION
@@ -841,7 +888,6 @@ elif page == "Market Analysis":
                 for alert in crossovers:
                     name = SECTOR_ETFS.get(alert["ticker"], alert["ticker"])
                     direction = alert["direction"]
-                    icon = "+" if direction == "positive" else "-"
                     st.write(
                         f"**{alert['ticker']}** ({name}): crossed to "
                         f"**{direction}** RS on {alert['cross_date']}"
@@ -865,6 +911,43 @@ elif page == "Market Analysis":
                 )
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
+            # --- Constituent breadth drill-down ---
+            st.markdown("#### Constituent Breadth Drill-Down")
+            st.caption(
+                "Select a sector ETF to see which of its underlying stocks "
+                "are above their 50-day and 200-day moving averages."
+            )
+            sector_options = [_etf_label(t, SECTOR_ETFS) for t in SECTOR_ETFS]
+            selected_label = st.selectbox("ETF", sector_options, key="sector_breadth_etf")
+            selected_etf = selected_label.split(" (")[0]
+
+            if st.button("Load constituent breadth", key="run_sector_breadth"):
+                with st.spinner(f"Fetching holdings for {selected_label}..."):
+                    cb = constituent_breadth(selected_etf, start=analysis_start)
+                if cb is not None and not cb.empty:
+                    st.session_state["sector_cb"] = cb
+                else:
+                    st.warning(
+                        f"Could not retrieve holdings for {selected_label}. "
+                        "Holdings data may not be available for this ETF."
+                    )
+
+            if "sector_cb" in st.session_state:
+                cb = st.session_state["sector_cb"]
+                cb_col1, cb_col2, cb_col3 = st.columns(3)
+                cb_col1.metric("Holdings analysed", cb.attrs.get("n_holdings", len(cb)))
+                cb_col2.metric("% above 50d SMA", f"{cb.attrs.get('above_sma50_pct', 0):.1f}%")
+                val_200 = cb.attrs.get("above_sma200_pct")
+                cb_col3.metric("% above 200d SMA",
+                               f"{val_200:.1f}%" if val_200 is not None else "N/A")
+
+                cb_display = ["ticker", "name", "close", "sma50", "above_sma50",
+                              "pct_from_sma50", "sma200", "above_sma200", "pct_from_sma200"]
+                cb_avail = [c for c in cb_display if c in cb.columns]
+                st.dataframe(cb[cb_avail], use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
             # --- Percentile context ---
             pctile_cols = [c for c in summary.columns if "pctile" in c]
             if pctile_cols:
@@ -881,7 +964,7 @@ elif page == "Market Analysis":
             if sector_tickers:
                 hm_series = rs_df.xs(heatmap_window, level="window", axis=1)
                 hm_data = hm_series[sector_tickers].iloc[-60:]
-                hm_data.columns = [f"{t} ({SECTOR_ETFS[t]})" for t in hm_data.columns]
+                hm_data.columns = [_etf_label(t, SECTOR_ETFS) for t in hm_data.columns]
                 fig_hm = go.Figure(data=go.Heatmap(
                     z=hm_data.T.values,
                     x=hm_data.index.strftime("%Y-%m-%d"),
@@ -896,6 +979,7 @@ elif page == "Market Analysis":
 
             # --- Breadth over time ---
             st.markdown("#### Sector Breadth Over Time")
+            st.caption("Percentage of sector ETFs whose price is above their own SMA.")
             sector_prices_only = prices[[t for t in SECTOR_ETFS.keys()
                                          if t in prices.columns]]
             bts = breadth_timeseries(sector_prices_only)
@@ -999,6 +1083,43 @@ elif page == "Market Analysis":
                 )
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
+            # --- Constituent breadth drill-down ---
+            st.markdown("#### Constituent Breadth Drill-Down")
+            st.caption(
+                "Select a factor ETF to see which of its underlying stocks "
+                "are above their 50-day and 200-day moving averages."
+            )
+            factor_options = [_etf_label(t, FACTOR_ETFS) for t in FACTOR_ETFS]
+            selected_label = st.selectbox("ETF", factor_options, key="factor_breadth_etf")
+            selected_etf = selected_label.split(" (")[0]
+
+            if st.button("Load constituent breadth", key="run_factor_breadth"):
+                with st.spinner(f"Fetching holdings for {selected_label}..."):
+                    cb = constituent_breadth(selected_etf, start=analysis_start)
+                if cb is not None and not cb.empty:
+                    st.session_state["factor_cb"] = cb
+                else:
+                    st.warning(
+                        f"Could not retrieve holdings for {selected_label}. "
+                        "Holdings data may not be available for this ETF."
+                    )
+
+            if "factor_cb" in st.session_state:
+                cb = st.session_state["factor_cb"]
+                cb_col1, cb_col2, cb_col3 = st.columns(3)
+                cb_col1.metric("Holdings analysed", cb.attrs.get("n_holdings", len(cb)))
+                cb_col2.metric("% above 50d SMA", f"{cb.attrs.get('above_sma50_pct', 0):.1f}%")
+                val_200 = cb.attrs.get("above_sma200_pct")
+                cb_col3.metric("% above 200d SMA",
+                               f"{val_200:.1f}%" if val_200 is not None else "N/A")
+
+                cb_display = ["ticker", "name", "close", "sma50", "above_sma50",
+                              "pct_from_sma50", "sma200", "above_sma200", "pct_from_sma200"]
+                cb_avail = [c for c in cb_display if c in cb.columns]
+                st.dataframe(cb[cb_avail], use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
             # --- Percentile context ---
             pctile_cols = [c for c in summary.columns if "pctile" in c]
             if pctile_cols:
@@ -1016,7 +1137,7 @@ elif page == "Market Analysis":
             if factor_tickers:
                 hm_series = rs_df.xs(heatmap_window, level="window", axis=1)
                 hm_data = hm_series[factor_tickers].iloc[-60:]
-                hm_data.columns = [f"{t} ({FACTOR_ETFS[t]})" for t in hm_data.columns]
+                hm_data.columns = [_etf_label(t, FACTOR_ETFS) for t in hm_data.columns]
                 fig_hm = go.Figure(data=go.Heatmap(
                     z=hm_data.T.values,
                     x=hm_data.index.strftime("%Y-%m-%d"),
@@ -1031,6 +1152,7 @@ elif page == "Market Analysis":
 
             # --- Breadth over time ---
             st.markdown("#### Factor Breadth Over Time")
+            st.caption("Percentage of factor ETFs whose price is above their own SMA.")
             factor_prices_only = prices[[t for t in FACTOR_ETFS.keys()
                                          if t in prices.columns]]
             bts = breadth_timeseries(factor_prices_only)
@@ -1053,16 +1175,19 @@ elif page == "Market Analysis":
             # --- Pairwise comparison ---
             st.markdown("---")
             st.markdown("#### Pairwise Factor Comparison")
-            all_factor_tickers = [t for t in FACTOR_ETFS.keys()
-                                  if t in prices.columns]
+            all_factor_labels = [_etf_label(t, FACTOR_ETFS) for t in FACTOR_ETFS
+                                 if t in prices.columns]
             pw_col1, pw_col2 = st.columns(2)
             with pw_col1:
-                ticker_a = st.selectbox("Factor A", all_factor_tickers,
-                                        index=0, key="pw_a")
+                label_a = st.selectbox("Factor A", all_factor_labels,
+                                       index=0, key="pw_a")
             with pw_col2:
-                default_b = min(1, len(all_factor_tickers) - 1)
-                ticker_b = st.selectbox("Factor B", all_factor_tickers,
-                                        index=default_b, key="pw_b")
+                default_b = min(1, len(all_factor_labels) - 1)
+                label_b = st.selectbox("Factor B", all_factor_labels,
+                                       index=default_b, key="pw_b")
+
+            ticker_a = label_a.split(" (")[0]
+            ticker_b = label_b.split(" (")[0]
 
             if ticker_a != ticker_b:
                 pw = pairwise_comparison(prices, ticker_a, ticker_b,
@@ -1082,9 +1207,7 @@ elif page == "Market Analysis":
                 ))
                 fig_pw.add_hline(y=0, line_dash="dot", line_color="gray")
                 fig_pw.update_layout(
-                    title=f"Cumulative Return Spread: "
-                          f"{ticker_a} ({FACTOR_ETFS.get(ticker_a, '')}) vs "
-                          f"{ticker_b} ({FACTOR_ETFS.get(ticker_b, '')})",
+                    title=f"Cumulative Return Spread: {label_a} vs {label_b}",
                     height=400,
                     xaxis_title="Date",
                     yaxis_title="Spread (cumulative return)",

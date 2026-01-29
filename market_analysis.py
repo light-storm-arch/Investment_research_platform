@@ -200,6 +200,98 @@ def breadth_timeseries(prices: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Constituent breadth (per-ETF drill-down)
+# ---------------------------------------------------------------------------
+
+def fetch_etf_holdings(ticker: str, max_holdings: int = 25) -> list[str]:
+    """Fetch top holdings of an ETF using yfinance funds_data.
+
+    Returns a list of up to *max_holdings* ticker symbols.  Falls back to
+    an empty list if the data is unavailable.
+    """
+    import yfinance as yf
+
+    try:
+        etf = yf.Ticker(ticker)
+        fd = etf.funds_data
+        holdings_df = fd.top_holdings
+        if holdings_df is None or holdings_df.empty:
+            return []
+        symbols = holdings_df.index.tolist()[:max_holdings]
+        # Clean up any index-level names (yfinance returns ticker as index)
+        return [str(s) for s in symbols if isinstance(s, str) and s]
+    except Exception as e:
+        logger.warning("Could not fetch holdings for %s: %s", ticker, e)
+        return []
+
+
+def constituent_breadth(
+    etf_ticker: str,
+    start: str = "2019-01-01",
+    max_holdings: int = 25,
+) -> pd.DataFrame | None:
+    """Compute breadth stats for the individual holdings of an ETF.
+
+    Returns a DataFrame with columns: ticker, name, close, sma50, sma200,
+    above_sma50, above_sma200, pct_from_sma50, pct_from_sma200.
+    Returns None if holdings cannot be retrieved.
+    """
+    import yfinance as yf
+
+    holdings = fetch_etf_holdings(etf_ticker, max_holdings=max_holdings)
+    if not holdings:
+        return None
+
+    prices = fetch_universe(holdings, start=start)
+    if prices.empty:
+        return None
+
+    rows = []
+    for ticker in prices.columns:
+        series = prices[ticker].dropna()
+        if len(series) < 50:
+            continue
+        sma50 = series.rolling(50).mean().iloc[-1]
+        sma200 = series.rolling(200).mean().iloc[-1] if len(series) >= 200 else np.nan
+        last = series.iloc[-1]
+
+        # Try to get company name
+        try:
+            info = yf.Ticker(ticker).info
+            name = info.get("shortName", ticker)
+        except Exception:
+            name = ticker
+
+        rows.append({
+            "ticker": ticker,
+            "name": name,
+            "close": round(last, 2),
+            "sma50": round(sma50, 2),
+            "sma200": round(sma200, 2) if not np.isnan(sma200) else np.nan,
+            "above_sma50": bool(last > sma50),
+            "above_sma200": bool(last > sma200) if not np.isnan(sma200) else None,
+            "pct_from_sma50": round((last / sma50 - 1) * 100, 2),
+            "pct_from_sma200": round((last / sma200 - 1) * 100, 2) if not np.isnan(sma200) else np.nan,
+        })
+
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows)
+    above_50_pct = df["above_sma50"].sum() / len(df) * 100
+    above_200_count = df["above_sma200"].dropna()
+    above_200_pct = above_200_count.sum() / len(above_200_count) * 100 if len(above_200_count) > 0 else np.nan
+
+    # Attach summary stats as DataFrame attributes for easy access
+    df.attrs["above_sma50_pct"] = round(above_50_pct, 1)
+    df.attrs["above_sma200_pct"] = round(above_200_pct, 1) if not np.isnan(above_200_pct) else None
+    df.attrs["etf_ticker"] = etf_ticker
+    df.attrs["n_holdings"] = len(df)
+
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Percentile context
 # ---------------------------------------------------------------------------
 
