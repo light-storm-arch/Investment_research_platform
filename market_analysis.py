@@ -203,32 +203,177 @@ def breadth_timeseries(prices: pd.DataFrame) -> pd.DataFrame:
 # Constituent breadth (per-ETF drill-down)
 # ---------------------------------------------------------------------------
 
-def fetch_etf_holdings(ticker: str, max_holdings: int = 25) -> list[str]:
-    """Fetch top holdings of an ETF using yfinance funds_data.
+# Yahoo Finance's quoteSummary API only returns ~10 "top holdings" per ETF.
+# To provide full constituent breadth we maintain a curated fallback map of
+# the major holdings for each tracked ETF.  yfinance is tried first; if it
+# returns fewer than _MIN_YFINANCE_HOLDINGS we fall back to this map.
 
-    Returns a list of up to *max_holdings* ticker symbols.  Falls back to
-    an empty list if the data is unavailable.
+_MIN_YFINANCE_HOLDINGS = 15
+
+ETF_CONSTITUENTS: dict[str, list[str]] = {
+    # --- Sector ETFs (Select Sector SPDRs) ---
+    "XLK": [
+        "AAPL", "MSFT", "NVDA", "AVGO", "CRM", "ADBE", "AMD", "CSCO", "ACN",
+        "ORCL", "QCOM", "INTU", "TXN", "AMAT", "IBM", "NOW", "PANW", "LRCX",
+        "ADI", "KLAC", "SNPS", "CDNS", "CRWD", "MSI", "APH", "NXPI", "MCHP",
+        "ROP", "FTNT", "ADSK",
+    ],
+    "XLV": [
+        "LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "AMGN", "DHR",
+        "PFE", "ISRG", "BSX", "SYK", "GILD", "VRTX", "MDT", "BMY", "ELV",
+        "CI", "ZTS", "REGN", "BDX", "HCA", "MCK", "A", "IDXX", "EW",
+        "IQV", "DXCM", "MTD",
+    ],
+    "XLF": [
+        "BRK-B", "JPM", "V", "MA", "BAC", "WFC", "GS", "SPGI", "MS",
+        "AXP", "BLK", "SCHW", "PGR", "C", "MMC", "CB", "FI", "ICE",
+        "CME", "AON", "MCO", "USB", "PNC", "TFC", "AJG", "MET", "AIG",
+        "MSCI", "TRV", "AFL",
+    ],
+    "XLE": [
+        "XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "PXD", "VLO",
+        "WMB", "OKE", "HES", "KMI", "HAL", "DVN", "FANG", "CTRA", "BKR",
+        "TRGP", "OXY",
+    ],
+    "XLY": [
+        "AMZN", "TSLA", "MCD", "HD", "NKE", "LOW", "BKNG", "TJX", "SBUX",
+        "CMG", "ORLY", "MAR", "HLT", "ABNB", "DHI", "GM", "F", "ROST",
+        "YUM", "LULU", "DRI", "LEN", "GRMN", "POOL", "DECK", "BBY",
+        "EBAY", "TPR", "NVR", "PHM",
+    ],
+    "XLP": [
+        "PG", "COST", "WMT", "KO", "PEP", "PM", "MDLZ", "MO", "CL",
+        "STZ", "ADM", "GIS", "KMB", "SYY", "KR", "MKC", "HSY", "K",
+        "CHD", "TSN", "EL", "CLX", "CAG", "SJM", "HRL", "CPB", "BG",
+        "TAP", "LW",
+    ],
+    "XLI": [
+        "CAT", "RTX", "UNP", "HON", "DE", "GE", "BA", "LMT", "UPS",
+        "ADP", "ETN", "WM", "ITW", "NOC", "GD", "CSX", "MMM", "NSC",
+        "EMR", "JCI", "FDX", "PH", "TDG", "CTAS", "CMI", "CARR",
+        "PCAR", "FAST", "VRSK", "RSG",
+    ],
+    "XLB": [
+        "LIN", "SHW", "APD", "ECL", "FCX", "NEM", "DOW", "NUE", "VMC",
+        "MLM", "PPG", "DD", "IFF", "EMN", "CE", "CTVA", "ALB", "CF",
+        "BALL", "PKG",
+    ],
+    "XLU": [
+        "NEE", "SO", "DUK", "SRE", "AEP", "D", "CEG", "EXC", "XEL",
+        "PCG", "ED", "PEG", "WEC", "AWK", "DTE", "ES", "EIX", "ETR",
+        "FE", "AEE", "CMS", "CNP", "ATO", "EVRG", "LNT", "NI", "PNW",
+        "PPL",
+    ],
+    "XLRE": [
+        "PLD", "AMT", "EQIX", "CCI", "SPG", "PSA", "O", "WELL", "DLR",
+        "VICI", "CBRE", "EXR", "AVB", "IRM", "WY", "VTR", "ARE",
+        "EQR", "MAA", "UDR", "ESS", "SUI", "INVH", "CPT", "HST",
+        "KIM", "REG", "PEAK", "BXP",
+    ],
+    "XLC": [
+        "META", "GOOGL", "GOOG", "NFLX", "T", "CMCSA", "VZ", "DIS",
+        "TMUS", "CHTR", "EA", "WBD", "OMC", "TTWO", "IPG", "MTCH",
+        "LYV", "NWSA", "NWS", "PARA", "FOXA", "FOX",
+    ],
+    # --- Factor ETFs ---
+    "IWM": [],   # ~2000 small caps – too many; yfinance top-N is the best we can do
+    "IWD": [
+        "BRK-B", "JPM", "JNJ", "UNH", "XOM", "V", "PG", "HD", "CVX",
+        "MRK", "ABBV", "BAC", "PFE", "KO", "PEP", "WFC", "CSCO", "ABT",
+        "VZ", "CMCSA", "MCD", "PM", "IBM", "TXN", "UPS", "RTX", "BMY",
+        "MS", "CAT", "GS",
+    ],
+    "IWF": [
+        "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "TSLA",
+        "AVGO", "LLY", "CRM", "AMD", "ADBE", "NFLX", "COST", "ACN",
+        "ORCL", "QCOM", "INTU", "NOW", "ISRG", "BKNG", "TXN", "AMAT",
+        "SNPS", "LRCX", "PANW", "CDNS", "KLAC", "CRWD",
+    ],
+    "VTI": [
+        "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "TSLA",
+        "BRK-B", "LLY", "AVGO", "JPM", "UNH", "V", "XOM", "JNJ", "MA",
+        "PG", "COST", "HD", "MRK", "ABBV", "CRM", "AMD", "ADBE", "CVX",
+        "BAC", "NFLX", "KO", "PEP",
+    ],
+    "VEA": [
+        "ASML", "NOVO-B.CO", "SAP", "NESN.SW", "AZN", "SHEL", "NOVN.SW",
+        "MC.PA", "TTE", "ROG.SW", "ULVR.L", "SIE.DE", "OR.PA", "RMS.PA",
+        "7203.T", "6758.T", "8306.T", "6861.T", "9984.T", "BHP.AX",
+    ],
+    "VWO": [
+        "TSM", "TCEHY", "BABA", "3690.HK", "0700.HK", "005930.KS",
+        "RELIANCE.NS", "INFY", "WIT", "HDB", "IBN", "VALE", "PBR",
+        "ITUB", "NU", "BIDU", "JD", "PDD", "MELI", "GLOB",
+    ],
+    "QUAL": [
+        "AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMZN", "LLY", "JPM",
+        "V", "MA", "UNH", "JNJ", "PG", "COST", "AVGO", "MRK", "HD",
+        "ABBV", "CRM", "ACN", "TXN", "NFLX", "AMD", "PEP", "TMO",
+        "ADBE", "LIN", "ISRG", "WMT", "QCOM",
+    ],
+    "MTUM": [
+        "NVDA", "AVGO", "META", "AAPL", "MSFT", "LLY", "NFLX", "CRM",
+        "AMD", "GE", "AMAT", "BKNG", "ISRG", "NOW", "PANW", "KLAC",
+        "LRCX", "CRWD", "CEG", "SNPS", "CDNS", "FTNT", "URI", "IT",
+        "DECK", "AXON", "MPWR", "ANET", "PWR", "EME",
+    ],
+    "USMV": [
+        "MSFT", "AAPL", "BRK-B", "JNJ", "PG", "T", "VZ", "KO", "PEP",
+        "WMT", "MRK", "ABT", "ABBV", "TMO", "CL", "MMC", "WM", "CME",
+        "DUK", "SO", "RSG", "WEC", "ED", "AEP", "XEL", "PAYX", "ADP",
+        "CMS", "OTIS", "BR",
+    ],
+    "VYM": [
+        "JPM", "AVGO", "XOM", "HD", "PG", "JNJ", "MRK", "BAC", "ABBV",
+        "CVX", "WFC", "KO", "CSCO", "PEP", "PFE", "MCD", "ABT", "PM",
+        "TXN", "VZ", "IBM", "MS", "BMY", "UPS", "CAT", "GS", "RTX",
+        "NEE", "SCHW", "AMGN",
+    ],
+}
+
+
+def fetch_etf_holdings(ticker: str, max_holdings: int | None = None) -> list[str]:
+    """Return constituent tickers for an ETF.
+
+    Strategy:
+    1. Try yfinance ``funds_data.top_holdings``.
+    2. If that returns fewer than *_MIN_YFINANCE_HOLDINGS* symbols, fall
+       back to the curated ``ETF_CONSTITUENTS`` map.
+    3. If *max_holdings* is given, truncate to that many.
     """
     import yfinance as yf
 
+    # Attempt yfinance first
+    yf_symbols: list[str] = []
     try:
         etf = yf.Ticker(ticker)
         fd = etf.funds_data
         holdings_df = fd.top_holdings
-        if holdings_df is None or holdings_df.empty:
-            return []
-        symbols = holdings_df.index.tolist()[:max_holdings]
-        # Clean up any index-level names (yfinance returns ticker as index)
-        return [str(s) for s in symbols if isinstance(s, str) and s]
+        if holdings_df is not None and not holdings_df.empty:
+            yf_symbols = [str(s) for s in holdings_df.index.tolist() if isinstance(s, str) and s]
     except Exception as e:
-        logger.warning("Could not fetch holdings for %s: %s", ticker, e)
-        return []
+        logger.warning("yfinance holdings lookup failed for %s: %s", ticker, e)
+
+    # Fall back to curated list when yfinance returns too few
+    if len(yf_symbols) >= _MIN_YFINANCE_HOLDINGS:
+        symbols = yf_symbols
+    else:
+        curated = ETF_CONSTITUENTS.get(ticker, [])
+        if curated:
+            logger.info("Using curated constituent list for %s (%d stocks)", ticker, len(curated))
+            symbols = curated
+        else:
+            symbols = yf_symbols  # yfinance partial list is better than nothing
+
+    if max_holdings is not None:
+        symbols = symbols[:max_holdings]
+    return symbols
 
 
 def constituent_breadth(
     etf_ticker: str,
     start: str = "2019-01-01",
-    max_holdings: int = 25,
+    max_holdings: int | None = None,
 ) -> pd.DataFrame | None:
     """Compute breadth stats for the individual holdings of an ETF.
 
@@ -246,6 +391,15 @@ def constituent_breadth(
     if prices.empty:
         return None
 
+    # Batch-fetch company names in one pass (avoids N individual .info calls)
+    ticker_names: dict[str, str] = {}
+    for h in prices.columns:
+        try:
+            info = yf.Ticker(h).info
+            ticker_names[h] = info.get("shortName", h)
+        except Exception:
+            ticker_names[h] = h
+
     rows = []
     for ticker in prices.columns:
         series = prices[ticker].dropna()
@@ -255,16 +409,9 @@ def constituent_breadth(
         sma200 = series.rolling(200).mean().iloc[-1] if len(series) >= 200 else np.nan
         last = series.iloc[-1]
 
-        # Try to get company name
-        try:
-            info = yf.Ticker(ticker).info
-            name = info.get("shortName", ticker)
-        except Exception:
-            name = ticker
-
         rows.append({
             "ticker": ticker,
-            "name": name,
+            "name": ticker_names.get(ticker, ticker),
             "close": round(last, 2),
             "sma50": round(sma50, 2),
             "sma200": round(sma200, 2) if not np.isnan(sma200) else np.nan,
