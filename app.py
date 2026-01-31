@@ -137,13 +137,16 @@ elif page == "Historical Analysis":
 
     # Condition-specific parameters
     if study_type == "Trailing annual return exceeds threshold":
-        threshold = st.sidebar.slider("Return threshold", 0.05, 0.50, 0.20, 0.01, format="%.0f%%")
+        threshold_pct = st.sidebar.slider("Return threshold (%)", 5, 50, 20, 1)
+        threshold = threshold_pct / 100.0
     elif study_type == "Trailing annual return below threshold":
-        threshold = st.sidebar.slider("Return threshold", -0.50, -0.05, -0.20, 0.01, format="%.0f%%")
+        threshold_pct = st.sidebar.slider("Return threshold (%)", -50, -5, -20, 1)
+        threshold = threshold_pct / 100.0
     elif "VIX" in study_type:
         vix_level = st.sidebar.slider("VIX level", 15.0, 80.0, 30.0, 1.0)
     elif "Drawdown" in study_type:
-        dd_threshold = st.sidebar.slider("Drawdown threshold", -0.50, -0.05, -0.10, 0.01, format="%.0f%%")
+        dd_threshold_pct = st.sidebar.slider("Drawdown threshold (%)", -50, -5, -10, 1)
+        dd_threshold = dd_threshold_pct / 100.0
     elif "SMA" in study_type:
         sma_window = st.sidebar.slider("SMA window (days)", 20, 400, 200, 10)
         sma_direction = st.sidebar.selectbox("Cross direction", ["above", "below"])
@@ -276,6 +279,31 @@ elif page == "Historical Analysis":
                     # Price chart with trigger markers
                     st.markdown("#### Price Chart with Trigger Points")
                     fig_price = go.Figure()
+
+                    if cond_ticker != fwd_ticker:
+                        # Dual-axis chart: condition ticker on left, forward ticker on right
+                        fig_price.add_trace(go.Scatter(
+                            x=cond_df.index,
+                            y=cond_df["Close"],
+                            mode="lines",
+                            name=cond_ticker,
+                            line=dict(color="darkorange", width=1),
+                            yaxis="y2",
+                        ))
+                        # Trigger markers on the condition ticker axis
+                        cond_trigger_prices = []
+                        for d in result.trigger_dates:
+                            loc = cond_df.index.get_indexer([d], method="nearest")[0]
+                            cond_trigger_prices.append(cond_df["Close"].iloc[loc])
+                        fig_price.add_trace(go.Scatter(
+                            x=result.trigger_dates,
+                            y=cond_trigger_prices,
+                            mode="markers",
+                            name="Trigger",
+                            marker=dict(color="red", size=10, symbol="triangle-down"),
+                            yaxis="y2",
+                        ))
+
                     fig_price.add_trace(go.Scatter(
                         x=fwd_df.index,
                         y=fwd_df["Close"],
@@ -283,22 +311,37 @@ elif page == "Historical Analysis":
                         name=fwd_ticker,
                         line=dict(color="steelblue", width=1),
                     ))
-                    trigger_prices = []
+                    # Trigger markers on the forward ticker axis
+                    fwd_trigger_prices = []
                     for d in result.trigger_dates:
                         loc = fwd_df.index.get_indexer([d], method="nearest")[0]
-                        trigger_prices.append(fwd_df["Close"].iloc[loc])
+                        fwd_trigger_prices.append(fwd_df["Close"].iloc[loc])
                     fig_price.add_trace(go.Scatter(
                         x=result.trigger_dates,
-                        y=trigger_prices,
+                        y=fwd_trigger_prices,
                         mode="markers",
-                        name="Trigger",
-                        marker=dict(color="red", size=8, symbol="triangle-up"),
+                        name="Trigger" if cond_ticker == fwd_ticker else f"Trigger ({fwd_ticker})",
+                        marker=dict(color="red", size=10, symbol="triangle-down"),
                     ))
-                    fig_price.update_layout(
-                        title=f"{fwd_ticker} Price with Trigger Points",
-                        yaxis_title="Price",
-                        height=500,
-                    )
+
+                    if cond_ticker != fwd_ticker:
+                        fig_price.update_layout(
+                            title=f"{cond_ticker} (condition) & {fwd_ticker} (forward returns) with Trigger Points",
+                            yaxis_title=f"{fwd_ticker} Price",
+                            yaxis2=dict(
+                                title=f"{cond_ticker} Price",
+                                overlaying="y",
+                                side="right",
+                            ),
+                            height=500,
+                            legend=dict(x=0, y=1.12, orientation="h"),
+                        )
+                    else:
+                        fig_price.update_layout(
+                            title=f"{fwd_ticker} Price with Trigger Points",
+                            yaxis_title="Price",
+                            height=500,
+                        )
                     st.plotly_chart(fig_price, use_container_width=True)
 
             except Exception as e:
