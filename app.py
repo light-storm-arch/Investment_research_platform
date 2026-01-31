@@ -186,166 +186,199 @@ elif page == "Historical Analysis":
                     min_gap_days=min_gap,
                 )
 
-                # --- Display results ---
-                st.subheader(f"Results: {desc}")
-                st.metric("Trigger dates found", len(result.trigger_dates))
-
-                if result.summary is not None and not result.summary.empty:
-                    # Summary table
-                    st.markdown("#### Forward Return Statistics")
-                    st.dataframe(
-                        result.summary.set_index("Horizon"),
-                        use_container_width=True,
-                    )
-
-                    # Bar chart of mean returns
-                    fig_mean = go.Figure()
-                    colors = [
-                        "green" if v >= 0 else "red"
-                        for v in result.summary["Mean Return (%)"]
-                    ]
-                    fig_mean.add_trace(go.Bar(
-                        x=result.summary["Horizon"],
-                        y=result.summary["Mean Return (%)"],
-                        marker_color=colors,
-                        text=[f"{v:+.1f}%" for v in result.summary["Mean Return (%)"]],
-                        textposition="outside",
-                    ))
-                    fig_mean.update_layout(
-                        title="Mean Forward Return by Horizon",
-                        yaxis_title="Return (%)",
-                        xaxis_title="Horizon",
-                        height=400,
-                    )
-                    st.plotly_chart(fig_mean, use_container_width=True)
-
-                    # Win rate chart
-                    fig_win = go.Figure()
-                    fig_win.add_trace(go.Bar(
-                        x=result.summary["Horizon"],
-                        y=result.summary["Win Rate (%)"],
-                        marker_color="steelblue",
-                        text=[f"{v:.0f}%" for v in result.summary["Win Rate (%)"]],
-                        textposition="outside",
-                    ))
-                    fig_win.add_hline(y=50, line_dash="dash", line_color="gray")
-                    fig_win.update_layout(
-                        title="Win Rate (% of positive outcomes) by Horizon",
-                        yaxis_title="Win Rate (%)",
-                        xaxis_title="Horizon",
-                        yaxis_range=[0, 100],
-                        height=400,
-                    )
-                    st.plotly_chart(fig_win, use_container_width=True)
-
-                    # Distribution of forward returns for each horizon
-                    st.markdown("#### Return Distributions")
-                    horizon_choice = st.selectbox(
-                        "Select horizon to view distribution",
-                        list(result.forward_returns.keys()),
-                    )
-                    rets = result.forward_returns[horizon_choice].dropna()
-                    if len(rets) > 0:
-                        fig_hist = go.Figure()
-                        fig_hist.add_trace(go.Histogram(
-                            x=rets.values * 100,
-                            nbinsx=20,
-                            marker_color="steelblue",
-                        ))
-                        fig_hist.add_vline(x=0, line_dash="dash", line_color="red")
-                        fig_hist.add_vline(
-                            x=rets.mean() * 100,
-                            line_dash="dot",
-                            line_color="green",
-                            annotation_text=f"Mean: {rets.mean() * 100:.1f}%",
-                        )
-                        fig_hist.update_layout(
-                            title=f"{horizon_choice} Forward Return Distribution (n={len(rets)})",
-                            xaxis_title="Return (%)",
-                            yaxis_title="Count",
-                            height=400,
-                        )
-                        st.plotly_chart(fig_hist, use_container_width=True)
-
-                # Trigger dates timeline
-                if result.trigger_dates:
-                    st.markdown("#### Trigger Dates")
-                    with st.expander(f"Show all {len(result.trigger_dates)} trigger dates"):
-                        dates_df = pd.DataFrame({
-                            "Date": [d.strftime("%Y-%m-%d") for d in result.trigger_dates],
-                        })
-                        st.dataframe(dates_df, use_container_width=True, hide_index=True)
-
-                    # Price chart with trigger markers
-                    st.markdown("#### Price Chart with Trigger Points")
-                    fig_price = go.Figure()
-
-                    if cond_ticker != fwd_ticker:
-                        # Dual-axis chart: condition ticker on left, forward ticker on right
-                        fig_price.add_trace(go.Scatter(
-                            x=cond_df.index,
-                            y=cond_df["Close"],
-                            mode="lines",
-                            name=cond_ticker,
-                            line=dict(color="darkorange", width=1),
-                            yaxis="y2",
-                        ))
-                        # Trigger markers on the condition ticker axis
-                        cond_trigger_prices = []
-                        for d in result.trigger_dates:
-                            loc = cond_df.index.get_indexer([d], method="nearest")[0]
-                            cond_trigger_prices.append(cond_df["Close"].iloc[loc])
-                        fig_price.add_trace(go.Scatter(
-                            x=result.trigger_dates,
-                            y=cond_trigger_prices,
-                            mode="markers",
-                            name="Trigger",
-                            marker=dict(color="red", size=10, symbol="triangle-down"),
-                            yaxis="y2",
-                        ))
-
-                    fig_price.add_trace(go.Scatter(
-                        x=fwd_df.index,
-                        y=fwd_df["Close"],
-                        mode="lines",
-                        name=fwd_ticker,
-                        line=dict(color="steelblue", width=1),
-                    ))
-                    # Trigger markers on the forward ticker axis
-                    fwd_trigger_prices = []
-                    for d in result.trigger_dates:
-                        loc = fwd_df.index.get_indexer([d], method="nearest")[0]
-                        fwd_trigger_prices.append(fwd_df["Close"].iloc[loc])
-                    fig_price.add_trace(go.Scatter(
-                        x=result.trigger_dates,
-                        y=fwd_trigger_prices,
-                        mode="markers",
-                        name="Trigger" if cond_ticker == fwd_ticker else f"Trigger ({fwd_ticker})",
-                        marker=dict(color="red", size=10, symbol="triangle-down"),
-                    ))
-
-                    if cond_ticker != fwd_ticker:
-                        fig_price.update_layout(
-                            title=f"{cond_ticker} (condition) & {fwd_ticker} (forward returns) with Trigger Points",
-                            yaxis_title=f"{fwd_ticker} Price",
-                            yaxis2=dict(
-                                title=f"{cond_ticker} Price",
-                                overlaying="y",
-                                side="right",
-                            ),
-                            height=500,
-                            legend=dict(x=0, y=1.12, orientation="h"),
-                        )
-                    else:
-                        fig_price.update_layout(
-                            title=f"{fwd_ticker} Price with Trigger Points",
-                            yaxis_title="Price",
-                            height=500,
-                        )
-                    st.plotly_chart(fig_price, use_container_width=True)
+                # Persist to session state so results survive reruns
+                st.session_state["ha_result"] = result
+                st.session_state["ha_desc"] = desc
+                st.session_state["ha_cond_df"] = cond_df
+                st.session_state["ha_fwd_df"] = fwd_df
+                st.session_state["ha_cond_ticker"] = cond_ticker
+                st.session_state["ha_fwd_ticker"] = fwd_ticker
 
             except Exception as e:
                 st.error(f"Error: {e}")
+
+    # --- Display results (outside button block so they persist) ---
+    if "ha_result" in st.session_state:
+        result = st.session_state["ha_result"]
+        desc = st.session_state["ha_desc"]
+        cond_df = st.session_state["ha_cond_df"]
+        fwd_df = st.session_state["ha_fwd_df"]
+        _cond_ticker = st.session_state["ha_cond_ticker"]
+        _fwd_ticker = st.session_state["ha_fwd_ticker"]
+
+        st.subheader(f"Results: {desc}")
+        st.metric("Trigger dates found", len(result.trigger_dates))
+
+        if result.summary is not None and not result.summary.empty:
+            # Summary table
+            st.markdown("#### Forward Return Statistics")
+            st.dataframe(
+                result.summary.set_index("Horizon"),
+                use_container_width=True,
+            )
+
+            # Bar chart of mean returns
+            fig_mean = go.Figure()
+            colors = [
+                "green" if v >= 0 else "red"
+                for v in result.summary["Mean Return (%)"]
+            ]
+            fig_mean.add_trace(go.Bar(
+                x=result.summary["Horizon"],
+                y=result.summary["Mean Return (%)"],
+                marker_color=colors,
+                text=[f"{v:+.1f}%" for v in result.summary["Mean Return (%)"]],
+                textposition="outside",
+            ))
+            fig_mean.update_layout(
+                title="Mean Forward Return by Horizon",
+                yaxis_title="Return (%)",
+                xaxis_title="Horizon",
+                height=400,
+            )
+            st.plotly_chart(fig_mean, use_container_width=True)
+
+            # Win rate chart
+            fig_win = go.Figure()
+            fig_win.add_trace(go.Bar(
+                x=result.summary["Horizon"],
+                y=result.summary["Win Rate (%)"],
+                marker_color="steelblue",
+                text=[f"{v:.0f}%" for v in result.summary["Win Rate (%)"]],
+                textposition="outside",
+            ))
+            fig_win.add_hline(y=50, line_dash="dash", line_color="gray")
+            fig_win.update_layout(
+                title="Win Rate (% of positive outcomes) by Horizon",
+                yaxis_title="Win Rate (%)",
+                xaxis_title="Horizon",
+                yaxis_range=[0, 100],
+                height=400,
+            )
+            st.plotly_chart(fig_win, use_container_width=True)
+
+            # Distribution of forward returns for each horizon
+            st.markdown("#### Return Distributions")
+            horizon_choice = st.selectbox(
+                "Select horizon to view distribution",
+                list(result.forward_returns.keys()),
+            )
+            rets = result.forward_returns[horizon_choice].dropna()
+            if len(rets) > 0:
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Histogram(
+                    x=rets.values * 100,
+                    nbinsx=20,
+                    marker_color="steelblue",
+                ))
+                fig_hist.add_vline(x=0, line_dash="dash", line_color="red")
+                fig_hist.add_vline(
+                    x=rets.mean() * 100,
+                    line_dash="dot",
+                    line_color="green",
+                    annotation_text=f"Mean: {rets.mean() * 100:.1f}%",
+                )
+                fig_hist.update_layout(
+                    title=f"{horizon_choice} Forward Return Distribution (n={len(rets)})",
+                    xaxis_title="Return (%)",
+                    yaxis_title="Count",
+                    height=400,
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+
+        # Trigger dates timeline
+        if result.trigger_dates:
+            st.markdown("#### Trigger Dates")
+            with st.expander(f"Show all {len(result.trigger_dates)} trigger dates"):
+                dates_df = pd.DataFrame({
+                    "Date": [d.strftime("%Y-%m-%d") for d in result.trigger_dates],
+                })
+                st.dataframe(dates_df, use_container_width=True, hide_index=True)
+
+            # Price chart(s) with trigger markers
+            st.markdown("#### Price Chart with Trigger Points")
+
+            if _cond_ticker != _fwd_ticker:
+                # --- Condition ticker chart ---
+                fig_cond = go.Figure()
+                fig_cond.add_trace(go.Scatter(
+                    x=cond_df.index,
+                    y=cond_df["Close"],
+                    mode="lines",
+                    name=_cond_ticker,
+                    line=dict(color="darkorange", width=1),
+                ))
+                cond_trigger_prices = []
+                for d in result.trigger_dates:
+                    loc = cond_df.index.get_indexer([d], method="nearest")[0]
+                    cond_trigger_prices.append(cond_df["Close"].iloc[loc])
+                fig_cond.add_trace(go.Scatter(
+                    x=result.trigger_dates,
+                    y=cond_trigger_prices,
+                    mode="markers",
+                    name="Trigger",
+                    marker=dict(color="red", size=10, symbol="triangle-down"),
+                ))
+                fig_cond.update_layout(
+                    title=f"{_cond_ticker} (condition) with Trigger Points",
+                    yaxis_title=f"{_cond_ticker} Price",
+                    height=400,
+                )
+                st.plotly_chart(fig_cond, use_container_width=True)
+
+                # --- Forward return ticker chart ---
+                fig_fwd = go.Figure()
+                fig_fwd.add_trace(go.Scatter(
+                    x=fwd_df.index,
+                    y=fwd_df["Close"],
+                    mode="lines",
+                    name=_fwd_ticker,
+                    line=dict(color="steelblue", width=1),
+                ))
+                fwd_trigger_prices = []
+                for d in result.trigger_dates:
+                    loc = fwd_df.index.get_indexer([d], method="nearest")[0]
+                    fwd_trigger_prices.append(fwd_df["Close"].iloc[loc])
+                fig_fwd.add_trace(go.Scatter(
+                    x=result.trigger_dates,
+                    y=fwd_trigger_prices,
+                    mode="markers",
+                    name="Trigger",
+                    marker=dict(color="red", size=10, symbol="triangle-down"),
+                ))
+                fig_fwd.update_layout(
+                    title=f"{_fwd_ticker} (forward returns) with Trigger Points",
+                    yaxis_title=f"{_fwd_ticker} Price",
+                    height=400,
+                )
+                st.plotly_chart(fig_fwd, use_container_width=True)
+            else:
+                # Single ticker chart
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Scatter(
+                    x=fwd_df.index,
+                    y=fwd_df["Close"],
+                    mode="lines",
+                    name=_fwd_ticker,
+                    line=dict(color="steelblue", width=1),
+                ))
+                trigger_prices = []
+                for d in result.trigger_dates:
+                    loc = fwd_df.index.get_indexer([d], method="nearest")[0]
+                    trigger_prices.append(fwd_df["Close"].iloc[loc])
+                fig_price.add_trace(go.Scatter(
+                    x=result.trigger_dates,
+                    y=trigger_prices,
+                    mode="markers",
+                    name="Trigger",
+                    marker=dict(color="red", size=10, symbol="triangle-down"),
+                ))
+                fig_price.update_layout(
+                    title=f"{_fwd_ticker} Price with Trigger Points",
+                    yaxis_title="Price",
+                    height=500,
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
 
 # ===================================================================
 # WATCHLIST ALERTS PAGE
