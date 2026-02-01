@@ -142,6 +142,7 @@ def render_pair_trends_page() -> None:
         zdf = pd.DataFrame([
             {
                 "Period": r.period,
+                "Lookback": f"{r.lookback_obs} obs (~{r.lookback_obs / 252:.1f} yr)",
                 "Current Return": f"{r.current_return:+.2%}",
                 "Hist Mean": f"{r.hist_mean:+.2%}",
                 "Hist Std": f"{r.hist_std:.2%}",
@@ -222,6 +223,7 @@ def render_pair_trends_page() -> None:
         ddf = pd.DataFrame([
             {
                 "Period": r.period,
+                "Lookback": f"{r.lookback_obs} obs (~{r.lookback_obs / 252:.1f} yr)",
                 "Current Dispersion": f"{r.current_dispersion:.2%}",
                 "Hist Mean": f"{r.hist_mean:.2%}",
                 "Hist Std": f"{r.hist_std:.2%}",
