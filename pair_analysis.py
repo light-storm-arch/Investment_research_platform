@@ -75,6 +75,7 @@ class ZScoreRow:
     hist_mean: float
     hist_std: float
     z_score: float
+    lookback_obs: int = 0  # number of observations in historical distribution
 
 
 @dataclass
@@ -86,6 +87,7 @@ class DispersionRow:
     hist_mean: float
     hist_std: float
     z_score: float
+    lookback_obs: int = 0  # number of observations in historical distribution
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +173,8 @@ def compute_zscore_table(ratio: pd.Series) -> list[ZScoreRow]:
             continue
 
         current = rolling_ret.iloc[-1]
+        # Observations used for the distribution (all except the current one)
+        n_obs = len(rolling_ret) - 1
         hist_mean = rolling_ret.expanding().mean().iloc[-2]  # exclude current
         hist_std = rolling_ret.expanding().std().iloc[-2]
 
@@ -185,6 +189,7 @@ def compute_zscore_table(ratio: pd.Series) -> list[ZScoreRow]:
             hist_mean=hist_mean,
             hist_std=hist_std,
             z_score=z,
+            lookback_obs=n_obs,
         ))
     return rows
 
@@ -239,6 +244,7 @@ def compute_dispersion_table(price_a: pd.Series, price_b: pd.Series) -> list[Dis
 
         spread = (ret_a - ret_b).abs()
         current = spread.iloc[-1]
+        n_obs = len(spread) - 1
 
         hist_mean = spread.expanding().mean().iloc[-2]
         hist_std = spread.expanding().std().iloc[-2]
@@ -254,5 +260,6 @@ def compute_dispersion_table(price_a: pd.Series, price_b: pd.Series) -> list[Dis
             hist_mean=hist_mean,
             hist_std=hist_std,
             z_score=z,
+            lookback_obs=n_obs,
         ))
     return rows
