@@ -43,7 +43,7 @@ st.set_page_config(
 st.sidebar.title("Investment Research")
 page = st.sidebar.radio(
     "Module",
-    ["Home", "Historical Analysis", "Watchlist Alerts", "ML Prediction", "Market Analysis"],
+    ["Home", "Historical Analysis", "Watchlist Alerts", "ML Prediction", "Market Analysis", "Pair Trends"],
 )
 
 # ===================================================================
@@ -84,6 +84,15 @@ if page == "Home":
             "Sector rotation and factor analysis dashboard. Track relative "
             "strength, momentum rankings, regime classification, and pairwise "
             "factor comparisons across all major sectors and style factors."
+        )
+
+    col5, col6 = st.columns(2)
+    with col5:
+        st.subheader("🔀 Pair Trends")
+        st.write(
+            "Analyse relative performance trends between paired asset classes. "
+            "View SMA trend overlays, rolling return z-scores, ratio volatility, "
+            "and return dispersion for pairs like Value/Growth and Intl/US."
         )
 
     st.markdown("---")
@@ -1298,6 +1307,15 @@ spread is widening toward one side or flat.
                 "Export Factor Data (CSV)", csv,
                 file_name="factor_analysis.csv", mime="text/csv",
             )
+
+
+# ===================================================================
+# PAIR TRENDS PAGE
+# ===================================================================
+
+elif page == "Pair Trends":
+    from pair_trends import render_pair_trends_page
+    render_pair_trends_page()
 
 
 # ---------------------------------------------------------------------------
