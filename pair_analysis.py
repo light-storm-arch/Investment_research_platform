@@ -139,12 +139,11 @@ def compute_sma(ratio: pd.Series, periods: list[int] | None = None) -> pd.DataFr
     return pd.DataFrame(data)
 
 
-def current_sma_readings(sma_df: pd.DataFrame) -> dict:
+def current_sma_readings(sma_df: pd.DataFrame, slope_window: int = 10) -> dict:
     """Return the latest log ratio / SMA values, above/below status, and slope.
 
-    Slope is the average daily change of each SMA over a window equal
-    to the SMA period itself (e.g. 50-day slope for SMA 50), so the
-    slope timescale matches the trend timescale.
+    Slope is the average daily change of each SMA over the last
+    *slope_window* days, annualised in the display layer (×252).
     """
     last = sma_df.dropna().iloc[-1]
     ratio_val = last["Log Ratio"]
@@ -153,11 +152,10 @@ def current_sma_readings(sma_df: pd.DataFrame) -> dict:
         if col.startswith("SMA"):
             readings[col] = last[col]
             readings[f"{col} Signal"] = "Above" if ratio_val >= last[col] else "Below"
-            period = int(col.split()[-1])
             sma_series = sma_df[col].dropna()
-            if len(sma_series) >= period + 1:
-                recent = sma_series.iloc[-(period + 1):]
-                readings[f"{col} Slope"] = (recent.iloc[-1] - recent.iloc[0]) / period
+            if len(sma_series) >= slope_window + 1:
+                recent = sma_series.iloc[-(slope_window + 1):]
+                readings[f"{col} Slope"] = (recent.iloc[-1] - recent.iloc[0]) / slope_window
             else:
                 readings[f"{col} Slope"] = 0.0
     return readings
