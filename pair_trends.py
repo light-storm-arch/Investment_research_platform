@@ -91,8 +91,8 @@ def render_pair_trends_page() -> None:
 
     fig_sma = go.Figure()
     fig_sma.add_trace(go.Scatter(
-        x=sma_plot.index, y=sma_plot["Ratio"],
-        name="Ratio", line=dict(width=2, color="#3b82f6"),
+        x=sma_plot.index, y=sma_plot["Log Ratio"],
+        name="Log Ratio", line=dict(width=2, color="#3b82f6"),
     ))
     colors = {"SMA 50": "#f59e0b", "SMA 100": "#8b5cf6", "SMA 200": "#ef4444"}
     for col in sma_plot.columns:
@@ -102,8 +102,8 @@ def render_pair_trends_page() -> None:
                 name=col, line=dict(width=1.5, dash="dash", color=colors.get(col, "#999")),
             ))
     fig_sma.update_layout(
-        title=f"{data.ticker_a}/{data.ticker_b} Price Ratio with SMAs",
-        yaxis_title="Ratio",
+        title=f"{data.ticker_a}/{data.ticker_b} Log Price Ratio with SMAs",
+        yaxis_title="Log Ratio",
         height=420,
         margin=dict(t=40, b=30),
         legend=dict(orientation="h", y=-0.15),
@@ -113,7 +113,7 @@ def render_pair_trends_page() -> None:
     # Current readings
     readings = current_sma_readings(sma_df)
     cols = st.columns(len(SMA_PERIODS) + 1)
-    cols[0].metric("Ratio", f"{readings['Ratio']:.4f}")
+    cols[0].metric("Log Ratio", f"{readings['Log Ratio']:.4f}")
     for i, p in enumerate(SMA_PERIODS):
         key = f"SMA {p}"
         signal = readings[f"{key} Signal"]
@@ -143,9 +143,9 @@ def render_pair_trends_page() -> None:
             {
                 "Period": r.period,
                 "Lookback": f"{r.lookback_obs} obs (~{r.lookback_obs / 252:.1f} yr)",
-                "Current Return": f"{r.current_return:+.2%}",
-                "Hist Mean": f"{r.hist_mean:+.2%}",
-                "Hist Std": f"{r.hist_std:.2%}",
+                "Current Log Return": f"{r.current_return:+.4f}",
+                "Hist Mean": f"{r.hist_mean:+.4f}",
+                "Hist Std": f"{r.hist_std:.4f}",
                 "Z-Score": round(r.z_score, 2),
             }
             for r in zscore_rows
@@ -190,7 +190,7 @@ def render_pair_trends_page() -> None:
         name=long_col, line=dict(width=2, color="#6366f1"),
     ))
     fig_vol.update_layout(
-        title="Rolling Annualised Volatility of Price Ratio",
+        title="Rolling Annualised Volatility of Log Price Ratio",
         yaxis_title="Volatility",
         yaxis_tickformat=".1%",
         height=360,
@@ -224,9 +224,9 @@ def render_pair_trends_page() -> None:
             {
                 "Period": r.period,
                 "Lookback": f"{r.lookback_obs} obs (~{r.lookback_obs / 252:.1f} yr)",
-                "Current Dispersion": f"{r.current_dispersion:.2%}",
-                "Hist Mean": f"{r.hist_mean:.2%}",
-                "Hist Std": f"{r.hist_std:.2%}",
+                "Current Dispersion": f"{r.current_dispersion:.4f}",
+                "Hist Mean": f"{r.hist_mean:.4f}",
+                "Hist Std": f"{r.hist_std:.4f}",
                 "Z-Score": round(r.z_score, 2),
             }
             for r in disp_rows

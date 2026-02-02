@@ -110,7 +110,7 @@ def fetch_pair(ticker_a: str, ticker_b: str, label: str, start: str = "2005-01-0
     combined = pd.concat([close_a.rename("A"), close_b.rename("B")], axis=1)
     combined = combined.ffill().dropna()
 
-    ratio = combined["A"] / combined["B"]
+    ratio = np.log(combined["A"] / combined["B"])
 
     fetched_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -130,20 +130,20 @@ def fetch_pair(ticker_a: str, ticker_b: str, label: str, start: str = "2005-01-0
 # ---------------------------------------------------------------------------
 
 def compute_sma(ratio: pd.Series, periods: list[int] | None = None) -> pd.DataFrame:
-    """Return a DataFrame with the ratio and its SMAs."""
+    """Return a DataFrame with the log ratio and its SMAs."""
     if periods is None:
         periods = SMA_PERIODS
-    data = {"Ratio": ratio}
+    data = {"Log Ratio": ratio}
     for p in periods:
         data[f"SMA {p}"] = ratio.rolling(p).mean()
     return pd.DataFrame(data)
 
 
 def current_sma_readings(sma_df: pd.DataFrame) -> dict:
-    """Return the latest ratio/SMA values and above/below status."""
+    """Return the latest log ratio / SMA values and above/below status."""
     last = sma_df.dropna().iloc[-1]
-    ratio_val = last["Ratio"]
-    readings = {"Ratio": ratio_val}
+    ratio_val = last["Log Ratio"]
+    readings = {"Log Ratio": ratio_val}
     for col in sma_df.columns:
         if col.startswith("SMA"):
             readings[col] = last[col]
@@ -156,19 +156,19 @@ def current_sma_readings(sma_df: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 
 def compute_rolling_ratio_returns(ratio: pd.Series) -> dict[str, pd.Series]:
-    """Compute rolling returns of the ratio for each window."""
+    """Compute rolling log-return changes of the ratio for each window."""
     result = {}
     for label, window in ROLLING_WINDOWS.items():
-        result[label] = ratio.pct_change(window)
+        result[label] = ratio.diff(window)
     return result
 
 
 def compute_zscore_table(ratio: pd.Series) -> list[ZScoreRow]:
-    """For each rolling window, compute the z-score of the current return
+    """For each rolling window, compute the z-score of the current log-return
     against the expanding historical distribution."""
     rows = []
     for label, window in ROLLING_WINDOWS.items():
-        rolling_ret = ratio.pct_change(window).dropna()
+        rolling_ret = ratio.diff(window).dropna()
         if len(rolling_ret) < 2:
             continue
 
@@ -199,8 +199,8 @@ def compute_zscore_table(ratio: pd.Series) -> list[ZScoreRow]:
 # ---------------------------------------------------------------------------
 
 def compute_ratio_volatility(ratio: pd.Series) -> pd.DataFrame:
-    """Compute short-term and long-term rolling volatility of daily ratio returns."""
-    daily_ret = ratio.pct_change().dropna()
+    """Compute short-term and long-term rolling volatility of daily log-ratio changes."""
+    daily_ret = ratio.diff().dropna()
     vol_df = pd.DataFrame({
         f"{VOL_SHORT}-Day Vol": daily_ret.rolling(VOL_SHORT).std() * np.sqrt(252),
         f"{VOL_LONG}-Day Vol": daily_ret.rolling(VOL_LONG).std() * np.sqrt(252),
@@ -228,12 +228,14 @@ def current_vol_readings(vol_df: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 
 def compute_dispersion_table(price_a: pd.Series, price_b: pd.Series) -> list[DispersionRow]:
-    """Compute the absolute return spread between two assets for each window
-    and compare to the historical distribution."""
+    """Compute the absolute log-return spread between two assets for each
+    window and compare to the historical distribution."""
+    log_a = np.log(price_a)
+    log_b = np.log(price_b)
     rows = []
     for label, window in DISPERSION_WINDOWS.items():
-        ret_a = price_a.pct_change(window).dropna()
-        ret_b = price_b.pct_change(window).dropna()
+        ret_a = log_a.diff(window).dropna()
+        ret_b = log_b.diff(window).dropna()
 
         # Align
         common = ret_a.index.intersection(ret_b.index)
