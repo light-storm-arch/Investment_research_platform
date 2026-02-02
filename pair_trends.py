@@ -118,11 +118,12 @@ def render_pair_trends_page() -> None:
         key = f"SMA {p}"
         signal = readings[f"{key} Signal"]
         slope = readings[f"{key} Slope"]
+        ann_slope = slope * 252
         slope_dir = "Rising" if slope > 0 else "Falling" if slope < 0 else "Flat"
         cols[i + 1].metric(
             key,
             f"{readings[key]:.4f}",
-            delta=f"{signal} · {slope_dir} ({slope:+.5f}/day)",
+            delta=f"{signal} · {slope_dir} ({ann_slope:+.4f}/yr)",
             delta_color="normal" if signal == "Above" else "inverse",
         )
 
