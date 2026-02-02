@@ -143,9 +143,9 @@ def render_pair_trends_page() -> None:
             {
                 "Period": r.period,
                 "Lookback": f"{r.lookback_obs} obs (~{r.lookback_obs / 252:.1f} yr)",
-                "Current Log Return": f"{r.current_return:+.4f}",
-                "Hist Mean": f"{r.hist_mean:+.4f}",
-                "Hist Std": f"{r.hist_std:.4f}",
+                "Current Log Return": f"{r.current_return:+.2%}",
+                "Hist Mean": f"{r.hist_mean:+.2%}",
+                "Hist Std": f"{r.hist_std:.2%}",
                 "Z-Score": round(r.z_score, 2),
             }
             for r in zscore_rows
@@ -224,9 +224,9 @@ def render_pair_trends_page() -> None:
             {
                 "Period": r.period,
                 "Lookback": f"{r.lookback_obs} obs (~{r.lookback_obs / 252:.1f} yr)",
-                "Current Dispersion": f"{r.current_dispersion:.4f}",
-                "Hist Mean": f"{r.hist_mean:.4f}",
-                "Hist Std": f"{r.hist_std:.4f}",
+                "Current Dispersion": f"{r.current_dispersion:.2%}",
+                "Hist Mean": f"{r.hist_mean:.2%}",
+                "Hist Std": f"{r.hist_std:.2%}",
                 "Z-Score": round(r.z_score, 2),
             }
             for r in disp_rows
