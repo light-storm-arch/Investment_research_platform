@@ -18,6 +18,7 @@ from pair_analysis import (
     VOL_LONG,
     fetch_pair,
     compute_sma,
+    compute_sma_slopes,
     current_sma_readings,
     compute_rolling_ratio_returns,
     compute_zscore_table,
@@ -87,7 +88,9 @@ def render_pair_trends_page() -> None:
     chart_start = pd.Timestamp.now() - pd.DateOffset(years=chart_years)
 
     sma_df = compute_sma(data.ratio)
+    slope_df = compute_sma_slopes(sma_df)
     sma_plot = sma_df.loc[sma_df.index >= chart_start]
+    slope_plot = slope_df.loc[slope_df.index >= chart_start]
 
     fig_sma = go.Figure()
     fig_sma.add_trace(go.Scatter(
@@ -97,9 +100,22 @@ def render_pair_trends_page() -> None:
     colors = {"SMA 50": "#f59e0b", "SMA 100": "#8b5cf6", "SMA 200": "#ef4444"}
     for col in sma_plot.columns:
         if col.startswith("SMA"):
+            slope_col = f"{col} Slope"
+            slope_vals = slope_plot[slope_col] if slope_col in slope_plot.columns else None
+            if slope_vals is not None:
+                hover = [
+                    f"{col}: {v:.4f}<br>Slope: {s:+.4f}/yr"
+                    if not (pd.isna(v) or pd.isna(s))
+                    else f"{col}: {v:.4f}"
+                    for v, s in zip(sma_plot[col], slope_vals)
+                ]
+            else:
+                hover = [f"{col}: {v:.4f}" for v in sma_plot[col]]
             fig_sma.add_trace(go.Scatter(
                 x=sma_plot.index, y=sma_plot[col],
                 name=col, line=dict(width=1.5, dash="dash", color=colors.get(col, "#999")),
+                hovertext=hover,
+                hoverinfo="text+x",
             ))
     fig_sma.update_layout(
         title=f"{data.ticker_a}/{data.ticker_b} Log Price Ratio with SMAs",

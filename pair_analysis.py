@@ -139,6 +139,19 @@ def compute_sma(ratio: pd.Series, periods: list[int] | None = None) -> pd.DataFr
     return pd.DataFrame(data)
 
 
+def compute_sma_slopes(sma_df: pd.DataFrame, slope_window: int = 10) -> pd.DataFrame:
+    """Compute the rolling annualised slope for each SMA column.
+
+    Slope at each date is the change over the prior *slope_window* days,
+    annualised by multiplying by 252.
+    """
+    slope_data = {}
+    for col in sma_df.columns:
+        if col.startswith("SMA"):
+            slope_data[f"{col} Slope"] = sma_df[col].diff(slope_window) / slope_window * 252
+    return pd.DataFrame(slope_data, index=sma_df.index)
+
+
 def current_sma_readings(sma_df: pd.DataFrame, slope_window: int = 10) -> dict:
     """Return the latest log ratio / SMA values, above/below status, and slope.
 
