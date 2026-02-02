@@ -117,10 +117,12 @@ def render_pair_trends_page() -> None:
     for i, p in enumerate(SMA_PERIODS):
         key = f"SMA {p}"
         signal = readings[f"{key} Signal"]
+        slope = readings[f"{key} Slope"]
+        slope_dir = "Rising" if slope > 0 else "Falling" if slope < 0 else "Flat"
         cols[i + 1].metric(
             key,
             f"{readings[key]:.4f}",
-            delta=signal,
+            delta=f"{signal} · {slope_dir} ({slope:+.5f}/day)",
             delta_color="normal" if signal == "Above" else "inverse",
         )
 
