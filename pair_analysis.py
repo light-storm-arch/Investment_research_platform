@@ -26,13 +26,23 @@ PAIR_CONFIG: list[dict] = [
     {"label": "International vs US Bonds", "ticker_a": "BNDX", "ticker_b": "BND"},
 ]
 
-# Rolling return windows in trading days
+# Rolling return windows in trading days (legacy, kept for reference)
 ROLLING_WINDOWS = {
     "3-Month": 63,
     "6-Month": 126,
     "12-Month": 252,
     "36-Month": 756,
 }
+
+# Non-overlapping return configuration
+# Approximate trading days per period
+TRADING_DAYS_PER_QUARTER = 63
+TRADING_DAYS_PER_HALF_YEAR = 126
+TRADING_DAYS_PER_YEAR = 252
+
+# Signal thresholds
+ZSCORE_THRESHOLD = 1.5
+DRAWDOWN_THRESHOLD = 0.10  # 10%
 
 # SMA periods
 SMA_PERIODS = [50, 100, 200]
@@ -88,6 +98,67 @@ class DispersionRow:
     hist_std: float
     z_score: float
     lookback_obs: int = 0  # number of observations in historical distribution
+
+
+@dataclass
+class NonOverlappingReturn:
+    """Single non-overlapping return observation."""
+
+    date: pd.Timestamp
+    period_type: str  # "quarterly", "semi_annual", "annual"
+    spread_return: float  # log(A) - log(B) change over period
+
+
+@dataclass
+class Layer1State:
+    """Layer 1: Single quarter z-score state."""
+
+    current_return: float
+    hist_mean: float
+    hist_std: float
+    z_score: float
+    is_active: bool  # |z| >= threshold
+    lookback_obs: int
+
+
+@dataclass
+class Layer2State:
+    """Layer 2: Trailing 4-quarter cumulative sum z-score state."""
+
+    trailing_4q_sum: float
+    hist_mean: float
+    hist_std: float
+    z_score: float
+    is_active: bool  # |z| >= threshold
+    lookback_obs: int
+    quarters_included: list  # dates of quarters in the sum
+
+
+@dataclass
+class Layer3State:
+    """Layer 3: Drawdown/rally from peak/trough state."""
+
+    cumulative_spread: float
+    trailing_high: float
+    trailing_low: float
+    drawdown_from_high: float  # as decimal (negative when below peak)
+    rally_from_low: float  # as decimal (positive when above trough)
+    is_active: bool  # drawdown or rally exceeds threshold
+    direction: str  # "drawdown" or "rally" or "neutral"
+
+
+@dataclass
+class SignalState:
+    """Combined signal state from all three layers."""
+
+    layer1: Layer1State
+    layer2: Layer2State
+    layer3: Layer3State
+    signal_active: bool
+    direction: str  # "FAVOR_VALUE", "FAVOR_GROWTH", "NEUTRAL"
+    signal_date: pd.Timestamp
+    ticker_a: str
+    ticker_b: str
 
 
 # ---------------------------------------------------------------------------
@@ -287,4 +358,428 @@ def compute_dispersion_table(price_a: pd.Series, price_b: pd.Series) -> list[Dis
             z_score=z,
             lookback_obs=n_obs,
         ))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Section 5: Non-Overlapping Returns
+# ---------------------------------------------------------------------------
+
+def _get_quarter_end_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Get actual trading dates closest to quarter ends (Mar, Jun, Sep, Dec).
+
+    Returns the last trading day of each quarter that exists in the index.
+    """
+    # Resample to quarter end and get last valid date in each quarter
+    temp_series = pd.Series(1, index=index)
+    quarter_ends = temp_series.resample("QE").last().dropna().index
+
+    # Map each quarter end to the closest actual trading date in our index
+    actual_dates = []
+    for qe in quarter_ends:
+        # Find dates on or before the quarter end
+        mask = index <= qe
+        if mask.any():
+            actual_dates.append(index[mask][-1])
+
+    return pd.DatetimeIndex(actual_dates)
+
+
+def _get_semi_annual_end_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Get actual trading dates closest to semi-annual ends (Jun, Dec)."""
+    quarter_ends = _get_quarter_end_dates(index)
+    # Filter to only Jun (Q2) and Dec (Q4)
+    semi_annual = quarter_ends[quarter_ends.month.isin([6, 12])]
+    return semi_annual
+
+
+def _get_annual_end_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Get actual trading dates closest to year ends (Dec only)."""
+    quarter_ends = _get_quarter_end_dates(index)
+    # Filter to only Dec (Q4)
+    annual = quarter_ends[quarter_ends.month == 12]
+    return annual
+
+
+def compute_non_overlapping_returns(ratio: pd.Series) -> dict[str, pd.DataFrame]:
+    """Compute non-overlapping spread returns for quarterly, semi-annual, and annual periods.
+
+    Args:
+        ratio: Log price ratio series (log(A) - log(B))
+
+    Returns:
+        Dictionary with keys 'quarterly', 'semi_annual', 'annual', each containing
+        a DataFrame with columns ['date', 'spread_return'].
+    """
+    result = {}
+
+    # Quarterly returns (end of Mar, Jun, Sep, Dec)
+    q_dates = _get_quarter_end_dates(ratio.index)
+    if len(q_dates) >= 2:
+        q_values = ratio.loc[q_dates]
+        q_returns = q_values.diff().dropna()
+        result["quarterly"] = pd.DataFrame({
+            "date": q_returns.index,
+            "spread_return": q_returns.values,
+        }).reset_index(drop=True)
+    else:
+        result["quarterly"] = pd.DataFrame(columns=["date", "spread_return"])
+
+    # Semi-annual returns (end of Jun, Dec)
+    sa_dates = _get_semi_annual_end_dates(ratio.index)
+    if len(sa_dates) >= 2:
+        sa_values = ratio.loc[sa_dates]
+        sa_returns = sa_values.diff().dropna()
+        result["semi_annual"] = pd.DataFrame({
+            "date": sa_returns.index,
+            "spread_return": sa_returns.values,
+        }).reset_index(drop=True)
+    else:
+        result["semi_annual"] = pd.DataFrame(columns=["date", "spread_return"])
+
+    # Annual returns (end of Dec only)
+    a_dates = _get_annual_end_dates(ratio.index)
+    if len(a_dates) >= 2:
+        a_values = ratio.loc[a_dates]
+        a_returns = a_values.diff().dropna()
+        result["annual"] = pd.DataFrame({
+            "date": a_returns.index,
+            "spread_return": a_returns.values,
+        }).reset_index(drop=True)
+    else:
+        result["annual"] = pd.DataFrame(columns=["date", "spread_return"])
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Section 6: Three-Layer Signal Framework
+# ---------------------------------------------------------------------------
+
+def compute_layer1_single_quarter(
+    quarterly_returns: pd.DataFrame,
+    threshold: float = ZSCORE_THRESHOLD,
+) -> Layer1State | None:
+    """Layer 1: Z-score the current quarter's spread return against historical distribution.
+
+    Args:
+        quarterly_returns: DataFrame with 'date' and 'spread_return' columns
+        threshold: Z-score threshold for activation (default 1.5)
+
+    Returns:
+        Layer1State or None if insufficient data
+    """
+    if len(quarterly_returns) < 3:  # Need at least 2 historical + 1 current
+        return None
+
+    returns = quarterly_returns["spread_return"].values
+    current = returns[-1]
+    historical = returns[:-1]
+
+    hist_mean = np.mean(historical)
+    hist_std = np.std(historical, ddof=1)  # Sample std
+
+    if hist_std == 0 or np.isnan(hist_std):
+        z_score = 0.0
+    else:
+        z_score = (current - hist_mean) / hist_std
+
+    return Layer1State(
+        current_return=current,
+        hist_mean=hist_mean,
+        hist_std=hist_std,
+        z_score=z_score,
+        is_active=abs(z_score) >= threshold,
+        lookback_obs=len(historical),
+    )
+
+
+def compute_layer2_trailing_4q(
+    quarterly_returns: pd.DataFrame,
+    threshold: float = ZSCORE_THRESHOLD,
+) -> Layer2State | None:
+    """Layer 2: Z-score the trailing 4-quarter cumulative sum against historical distribution.
+
+    Args:
+        quarterly_returns: DataFrame with 'date' and 'spread_return' columns
+        threshold: Z-score threshold for activation (default 1.5)
+
+    Returns:
+        Layer2State or None if insufficient data
+    """
+    if len(quarterly_returns) < 5:  # Need at least 4 quarters + 1 historical 4Q sum
+        return None
+
+    returns = quarterly_returns["spread_return"].values
+    dates = quarterly_returns["date"].values
+
+    # Compute all possible 4-quarter sums
+    four_q_sums = []
+    four_q_end_dates = []
+    for i in range(3, len(returns)):
+        four_q_sum = returns[i-3:i+1].sum()
+        four_q_sums.append(four_q_sum)
+        four_q_end_dates.append(dates[i])
+
+    if len(four_q_sums) < 2:
+        return None
+
+    four_q_sums = np.array(four_q_sums)
+    current_sum = four_q_sums[-1]
+    historical_sums = four_q_sums[:-1]
+
+    hist_mean = np.mean(historical_sums)
+    hist_std = np.std(historical_sums, ddof=1)
+
+    if hist_std == 0 or np.isnan(hist_std):
+        z_score = 0.0
+    else:
+        z_score = (current_sum - hist_mean) / hist_std
+
+    # Get the dates of quarters included in the current sum
+    quarters_included = list(dates[-4:])
+
+    return Layer2State(
+        trailing_4q_sum=current_sum,
+        hist_mean=hist_mean,
+        hist_std=hist_std,
+        z_score=z_score,
+        is_active=abs(z_score) >= threshold,
+        lookback_obs=len(historical_sums),
+        quarters_included=quarters_included,
+    )
+
+
+def compute_layer3_drawdown(
+    ratio: pd.Series,
+    threshold: float = DRAWDOWN_THRESHOLD,
+) -> Layer3State:
+    """Layer 3: Track drawdown from peak or rally from trough of cumulative log spread.
+
+    Args:
+        ratio: Log price ratio series (log(A) - log(B)), which is the cumulative spread
+        threshold: Drawdown/rally threshold for activation (default 0.10 = 10%)
+
+    Returns:
+        Layer3State
+    """
+    current = ratio.iloc[-1]
+    trailing_high = ratio.max()
+    trailing_low = ratio.min()
+
+    # Drawdown from high (negative when below peak)
+    drawdown_from_high = current - trailing_high  # Will be <= 0
+
+    # Rally from low (positive when above trough)
+    rally_from_low = current - trailing_low  # Will be >= 0
+
+    # Calculate percentages relative to peak/trough
+    # Using absolute value of the spread level as denominator, or just use raw difference
+    # Since log ratios can be negative, we use the absolute difference directly
+    drawdown_pct = drawdown_from_high  # Already in log terms
+    rally_pct = rally_from_low
+
+    # Determine direction and activity
+    # Active if |drawdown| > threshold OR |rally| > threshold
+    is_drawdown_active = abs(drawdown_pct) >= threshold
+    is_rally_active = rally_pct >= threshold
+
+    if is_drawdown_active and abs(drawdown_pct) > rally_pct:
+        direction = "drawdown"
+        is_active = True
+    elif is_rally_active:
+        direction = "rally"
+        is_active = True
+    else:
+        direction = "neutral"
+        is_active = False
+
+    return Layer3State(
+        cumulative_spread=current,
+        trailing_high=trailing_high,
+        trailing_low=trailing_low,
+        drawdown_from_high=drawdown_pct,
+        rally_from_low=rally_pct,
+        is_active=is_active,
+        direction=direction,
+    )
+
+
+def compute_combined_signal(
+    pair_data: PairData,
+    zscore_threshold: float = ZSCORE_THRESHOLD,
+    drawdown_threshold: float = DRAWDOWN_THRESHOLD,
+) -> SignalState | None:
+    """Compute the combined signal from all three layers.
+
+    Signal is active when:
+    - Layer 3 (drawdown) is active (>10% from peak/trough) AND
+    - Layer 2 (trailing 4Q z-score) exceeds ±1.5 AND
+    - Layer 1 (single Q z-score) exceeds ±1.5
+
+    Direction:
+    - FAVOR_VALUE: Value (ticker_a) is underperforming, expect mean reversion
+      (negative z-scores + drawdown from high)
+    - FAVOR_GROWTH: Growth (ticker_b) is underperforming, expect mean reversion
+      (positive z-scores + rally from low)
+
+    Args:
+        pair_data: PairData object with ratio series
+        zscore_threshold: Threshold for z-score layers (default 1.5)
+        drawdown_threshold: Threshold for drawdown layer (default 0.10)
+
+    Returns:
+        SignalState or None if insufficient data
+    """
+    # Compute non-overlapping returns
+    non_overlap = compute_non_overlapping_returns(pair_data.ratio)
+    quarterly = non_overlap["quarterly"]
+
+    if quarterly.empty:
+        return None
+
+    # Compute each layer
+    layer1 = compute_layer1_single_quarter(quarterly, zscore_threshold)
+    layer2 = compute_layer2_trailing_4q(quarterly, zscore_threshold)
+    layer3 = compute_layer3_drawdown(pair_data.ratio, drawdown_threshold)
+
+    if layer1 is None or layer2 is None:
+        return None
+
+    # Combined signal logic
+    signal_active = layer1.is_active and layer2.is_active and layer3.is_active
+
+    # Determine direction
+    if signal_active:
+        # Check z-score signs for direction
+        if layer1.z_score < 0 and layer2.z_score < 0 and layer3.direction == "drawdown":
+            # Negative spread returns + drawdown = Value underperforming
+            # Expect mean reversion toward value
+            direction = "FAVOR_VALUE"
+        elif layer1.z_score > 0 and layer2.z_score > 0 and layer3.direction == "rally":
+            # Positive spread returns + rally from low = Growth underperforming
+            # Expect mean reversion toward growth
+            direction = "FAVOR_GROWTH"
+        else:
+            # Mixed signals - still active but direction unclear
+            direction = "MIXED"
+    else:
+        direction = "NEUTRAL"
+
+    return SignalState(
+        layer1=layer1,
+        layer2=layer2,
+        layer3=layer3,
+        signal_active=signal_active,
+        direction=direction,
+        signal_date=quarterly["date"].iloc[-1],
+        ticker_a=pair_data.ticker_a,
+        ticker_b=pair_data.ticker_b,
+    )
+
+
+def compute_signal_history(
+    pair_data: PairData,
+    zscore_threshold: float = ZSCORE_THRESHOLD,
+    drawdown_threshold: float = DRAWDOWN_THRESHOLD,
+) -> pd.DataFrame:
+    """Compute historical signal states for backtesting/visualization.
+
+    Returns a DataFrame with signal state at each quarter end.
+    """
+    non_overlap = compute_non_overlapping_returns(pair_data.ratio)
+    quarterly = non_overlap["quarterly"]
+
+    if len(quarterly) < 5:
+        return pd.DataFrame()
+
+    records = []
+
+    # Need at least 4 quarters for Layer 2, and 1 more for historical distribution
+    for i in range(5, len(quarterly) + 1):
+        subset = quarterly.iloc[:i].copy()
+
+        # Get ratio up to this quarter's date
+        q_date = subset["date"].iloc[-1]
+        ratio_subset = pair_data.ratio.loc[:q_date]
+
+        layer1 = compute_layer1_single_quarter(subset, zscore_threshold)
+        layer2 = compute_layer2_trailing_4q(subset, zscore_threshold)
+        layer3 = compute_layer3_drawdown(ratio_subset, drawdown_threshold)
+
+        if layer1 is None or layer2 is None:
+            continue
+
+        signal_active = layer1.is_active and layer2.is_active and layer3.is_active
+
+        if signal_active:
+            if layer1.z_score < 0 and layer2.z_score < 0 and layer3.direction == "drawdown":
+                direction = "FAVOR_VALUE"
+            elif layer1.z_score > 0 and layer2.z_score > 0 and layer3.direction == "rally":
+                direction = "FAVOR_GROWTH"
+            else:
+                direction = "MIXED"
+        else:
+            direction = "NEUTRAL"
+
+        records.append({
+            "date": q_date,
+            "spread_return": layer1.current_return,
+            "l1_zscore": layer1.z_score,
+            "l1_active": layer1.is_active,
+            "trailing_4q_sum": layer2.trailing_4q_sum,
+            "l2_zscore": layer2.z_score,
+            "l2_active": layer2.is_active,
+            "cumulative_spread": layer3.cumulative_spread,
+            "drawdown": layer3.drawdown_from_high,
+            "rally": layer3.rally_from_low,
+            "l3_direction": layer3.direction,
+            "l3_active": layer3.is_active,
+            "signal_active": signal_active,
+            "direction": direction,
+        })
+
+    return pd.DataFrame(records)
+
+
+def get_non_overlapping_zscore_table(pair_data: PairData) -> list[ZScoreRow]:
+    """Compute z-scores using non-overlapping returns for all periods.
+
+    This replaces the old compute_zscore_table with non-overlapping samples.
+    """
+    non_overlap = compute_non_overlapping_returns(pair_data.ratio)
+    rows = []
+
+    period_map = {
+        "quarterly": "3-Month (Quarterly)",
+        "semi_annual": "6-Month (Semi-Annual)",
+        "annual": "12-Month (Annual)",
+    }
+
+    for period_key, label in period_map.items():
+        df = non_overlap[period_key]
+        if len(df) < 3:
+            continue
+
+        returns = df["spread_return"].values
+        current = returns[-1]
+        historical = returns[:-1]
+
+        hist_mean = np.mean(historical)
+        hist_std = np.std(historical, ddof=1)
+
+        if hist_std == 0 or np.isnan(hist_std):
+            z = 0.0
+        else:
+            z = (current - hist_mean) / hist_std
+
+        rows.append(ZScoreRow(
+            period=label,
+            current_return=current,
+            hist_mean=hist_mean,
+            hist_std=hist_std,
+            z_score=z,
+            lookback_obs=len(historical),
+        ))
+
     return rows

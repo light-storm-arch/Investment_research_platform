@@ -16,6 +16,8 @@ from pair_analysis import (
     SMA_PERIODS,
     VOL_SHORT,
     VOL_LONG,
+    ZSCORE_THRESHOLD,
+    DRAWDOWN_THRESHOLD,
     fetch_pair,
     compute_sma,
     compute_sma_slopes,
@@ -25,6 +27,10 @@ from pair_analysis import (
     compute_ratio_volatility,
     current_vol_readings,
     compute_dispersion_table,
+    compute_non_overlapping_returns,
+    compute_combined_signal,
+    compute_signal_history,
+    get_non_overlapping_zscore_table,
 )
 
 
@@ -34,6 +40,22 @@ def _zscore_color(z: float, threshold: float) -> str:
     elif z <= -threshold:
         return "color: #ef4444; font-weight: bold"
     return ""
+
+
+def _signal_direction_color(direction: str) -> str:
+    """Return CSS color for signal direction."""
+    if direction == "FAVOR_VALUE":
+        return "color: #22c55e; font-weight: bold"
+    elif direction == "FAVOR_GROWTH":
+        return "color: #ef4444; font-weight: bold"
+    elif direction == "MIXED":
+        return "color: #f59e0b; font-weight: bold"
+    return ""
+
+
+def _bool_to_status(active: bool) -> str:
+    """Convert boolean to status string."""
+    return "✓ Active" if active else "—"
 
 
 def render_pair_trends_page() -> None:
@@ -146,9 +168,14 @@ def render_pair_trends_page() -> None:
     st.markdown("---")
 
     # ------------------------------------------------------------------
-    # Section 2: Z-Scores of Rolling Returns
+    # Section 2: Z-Scores of Non-Overlapping Returns
     # ------------------------------------------------------------------
-    st.header("2. Z-Scores of Rolling Returns")
+    st.header("2. Z-Scores of Non-Overlapping Returns")
+
+    st.info(
+        "**Non-overlapping returns** are sampled at period ends to eliminate serial "
+        "correlation: quarterly (Mar/Jun/Sep/Dec), semi-annual (Jun/Dec), annual (Dec)."
+    )
 
     z_threshold = st.number_input(
         "Z-score highlight threshold",
@@ -156,12 +183,12 @@ def render_pair_trends_page() -> None:
         key="pt_z_thresh",
     )
 
-    zscore_rows = compute_zscore_table(data.ratio)
+    zscore_rows = get_non_overlapping_zscore_table(data)
     if zscore_rows:
         zdf = pd.DataFrame([
             {
                 "Period": r.period,
-                "Lookback": f"{r.lookback_obs} obs (~{r.lookback_obs / 252:.1f} yr)",
+                "Lookback": f"{r.lookback_obs} obs",
                 "Current Log Return": f"{r.current_return:+.2%}",
                 "Hist Mean": f"{r.hist_mean:+.2%}",
                 "Hist Std": f"{r.hist_std:.2%}",
@@ -183,8 +210,157 @@ def render_pair_trends_page() -> None:
     st.caption(
         f"**Interpretation:** A positive z-score means **{data.ticker_a}** is "
         f"outperforming **{data.ticker_b}** relative to historical norms. "
-        f"Values beyond +/-{z_threshold:.1f} are highlighted."
+        f"Values beyond ±{z_threshold:.1f} are highlighted."
     )
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------------
+    # Section 2b: Three-Layer Signal Framework
+    # ------------------------------------------------------------------
+    st.header("2b. Multi-Layer Signal Framework")
+
+    st.markdown(
+        """
+        **Signal triggers when ALL three layers are active:**
+        - **Layer 1:** Current quarter z-score exceeds ±1.5
+        - **Layer 2:** Trailing 4-quarter cumulative z-score exceeds ±1.5
+        - **Layer 3:** Drawdown from peak or rally from trough exceeds 10%
+        """
+    )
+
+    signal_state = compute_combined_signal(data, z_threshold, DRAWDOWN_THRESHOLD)
+
+    if signal_state:
+        # Signal Status Banner
+        if signal_state.signal_active:
+            if signal_state.direction == "FAVOR_VALUE":
+                st.success(
+                    f"🟢 **SIGNAL ACTIVE: FAVOR VALUE ({data.ticker_a})**\n\n"
+                    f"Value has underperformed significantly — expect mean reversion."
+                )
+            elif signal_state.direction == "FAVOR_GROWTH":
+                st.error(
+                    f"🔴 **SIGNAL ACTIVE: FAVOR GROWTH ({data.ticker_b})**\n\n"
+                    f"Growth has underperformed significantly — expect mean reversion."
+                )
+            else:
+                st.warning(
+                    f"🟡 **SIGNAL ACTIVE: MIXED**\n\n"
+                    f"All layers triggered but z-score signs are inconsistent."
+                )
+        else:
+            st.info("⚪ **NO SIGNAL** — Not all layers are active.")
+
+        # Layer Details
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.subheader("Layer 1: Single Quarter")
+            l1 = signal_state.layer1
+            status_color = "green" if l1.is_active else "gray"
+            st.markdown(f"**Status:** :{status_color}[{_bool_to_status(l1.is_active)}]")
+            st.metric("Current Q Return", f"{l1.current_return:+.2%}")
+            st.metric("Z-Score", f"{l1.z_score:+.2f}")
+            st.caption(f"Historical: μ={l1.hist_mean:+.2%}, σ={l1.hist_std:.2%}")
+            st.caption(f"Based on {l1.lookback_obs} quarters")
+
+        with col2:
+            st.subheader("Layer 2: Trailing 4Q")
+            l2 = signal_state.layer2
+            status_color = "green" if l2.is_active else "gray"
+            st.markdown(f"**Status:** :{status_color}[{_bool_to_status(l2.is_active)}]")
+            st.metric("4Q Sum", f"{l2.trailing_4q_sum:+.2%}")
+            st.metric("Z-Score", f"{l2.z_score:+.2f}")
+            st.caption(f"Historical: μ={l2.hist_mean:+.2%}, σ={l2.hist_std:.2%}")
+            st.caption(f"Based on {l2.lookback_obs} 4Q periods")
+
+        with col3:
+            st.subheader("Layer 3: Drawdown/Rally")
+            l3 = signal_state.layer3
+            status_color = "green" if l3.is_active else "gray"
+            st.markdown(f"**Status:** :{status_color}[{_bool_to_status(l3.is_active)}]")
+            st.metric("Cumulative Spread", f"{l3.cumulative_spread:.4f}")
+            st.metric("From High", f"{l3.drawdown_from_high:+.2%}")
+            st.metric("From Low", f"{l3.rally_from_low:+.2%}")
+            st.caption(f"Direction: {l3.direction.title()}")
+
+        # Signal History Chart
+        st.subheader("Signal History")
+        signal_hist = compute_signal_history(data, z_threshold, DRAWDOWN_THRESHOLD)
+
+        if not signal_hist.empty:
+            # Filter to chart period
+            signal_hist["date"] = pd.to_datetime(signal_hist["date"])
+            hist_plot = signal_hist[signal_hist["date"] >= chart_start]
+
+            if not hist_plot.empty:
+                fig_signal = go.Figure()
+
+                # Plot cumulative spread
+                fig_signal.add_trace(go.Scatter(
+                    x=hist_plot["date"],
+                    y=hist_plot["cumulative_spread"],
+                    name="Cumulative Spread",
+                    line=dict(width=2, color="#3b82f6"),
+                ))
+
+                # Add markers for signals
+                favor_value = hist_plot[hist_plot["direction"] == "FAVOR_VALUE"]
+                favor_growth = hist_plot[hist_plot["direction"] == "FAVOR_GROWTH"]
+                mixed = hist_plot[hist_plot["direction"] == "MIXED"]
+
+                if not favor_value.empty:
+                    fig_signal.add_trace(go.Scatter(
+                        x=favor_value["date"],
+                        y=favor_value["cumulative_spread"],
+                        mode="markers",
+                        name="Favor Value",
+                        marker=dict(size=12, color="#22c55e", symbol="triangle-up"),
+                    ))
+
+                if not favor_growth.empty:
+                    fig_signal.add_trace(go.Scatter(
+                        x=favor_growth["date"],
+                        y=favor_growth["cumulative_spread"],
+                        mode="markers",
+                        name="Favor Growth",
+                        marker=dict(size=12, color="#ef4444", symbol="triangle-down"),
+                    ))
+
+                if not mixed.empty:
+                    fig_signal.add_trace(go.Scatter(
+                        x=mixed["date"],
+                        y=mixed["cumulative_spread"],
+                        mode="markers",
+                        name="Mixed Signal",
+                        marker=dict(size=10, color="#f59e0b", symbol="diamond"),
+                    ))
+
+                fig_signal.update_layout(
+                    title=f"{data.ticker_a}/{data.ticker_b} Signal History (Quarterly)",
+                    yaxis_title="Log Spread",
+                    height=400,
+                    margin=dict(t=40, b=30),
+                    legend=dict(orientation="h", y=-0.15),
+                )
+                st.plotly_chart(fig_signal, use_container_width=True)
+
+                # Show recent signals table
+                recent_signals = hist_plot[hist_plot["signal_active"]].tail(10)
+                if not recent_signals.empty:
+                    st.subheader("Recent Signals")
+                    sig_table = pd.DataFrame({
+                        "Date": recent_signals["date"].dt.strftime("%Y-%m-%d"),
+                        "Direction": recent_signals["direction"],
+                        "L1 Z": recent_signals["l1_zscore"].round(2),
+                        "L2 Z": recent_signals["l2_zscore"].round(2),
+                        "Drawdown": recent_signals["drawdown"].apply(lambda x: f"{x:+.1%}"),
+                        "Rally": recent_signals["rally"].apply(lambda x: f"{x:+.1%}"),
+                    })
+                    st.dataframe(sig_table, use_container_width=True, hide_index=True)
+    else:
+        st.warning("Insufficient quarterly data to compute signal framework (need at least 5 quarters).")
 
     st.markdown("---")
 
