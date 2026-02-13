@@ -246,6 +246,43 @@ def current_sma_readings(sma_df: pd.DataFrame, slope_window: int = 10) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Section 1b: RSI of the Ratio
+# ---------------------------------------------------------------------------
+
+RSI_DEFAULT_WINDOW = 14
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
+
+
+def compute_ratio_rsi(
+    ratio: pd.Series,
+    window: int = RSI_DEFAULT_WINDOW,
+    frequency: str = "daily",
+) -> pd.Series:
+    """Compute RSI on the log price ratio series.
+
+    Args:
+        ratio: Log price ratio series (log(A/B)).
+        window: RSI lookback period (number of bars). Default 14.
+        frequency: ``"daily"`` uses daily closes; ``"weekly"`` resamples
+            to Friday closes before computing RSI.
+
+    Returns:
+        RSI series indexed by date.
+    """
+    series = ratio.copy()
+    if frequency == "weekly":
+        series = series.resample("W-FRI").last().dropna()
+
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(window).mean()
+    loss = (-delta.clip(upper=0)).rolling(window).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+# ---------------------------------------------------------------------------
 # Section 2: Z-Scores of Rolling Returns
 # ---------------------------------------------------------------------------
 

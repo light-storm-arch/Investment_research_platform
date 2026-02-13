@@ -18,10 +18,14 @@ from pair_analysis import (
     VOL_LONG,
     ZSCORE_THRESHOLD,
     DRAWDOWN_THRESHOLD,
+    RSI_DEFAULT_WINDOW,
+    RSI_OVERBOUGHT,
+    RSI_OVERSOLD,
     fetch_pair,
     compute_sma,
     compute_sma_slopes,
     current_sma_readings,
+    compute_ratio_rsi,
     compute_rolling_ratio_returns,
     compute_zscore_table,
     compute_ratio_volatility,
@@ -164,6 +168,103 @@ def render_pair_trends_page() -> None:
             delta=f"{signal} · {slope_dir} ({ann_slope:+.4f}/yr)",
             delta_color="normal" if signal == "Above" else "inverse",
         )
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------------
+    # Section 1b: RSI Momentum
+    # ------------------------------------------------------------------
+    st.header("1b. RSI Momentum")
+
+    st.info(
+        "**Relative Strength Index (RSI)** applied to the log price ratio. "
+        "Readings above the overbought threshold suggest "
+        f"**{data.ticker_a}** momentum is extended relative to **{data.ticker_b}**; "
+        "readings below oversold suggest the reverse."
+    )
+
+    rsi_col1, rsi_col2, rsi_col3, rsi_col4 = st.columns(4)
+    with rsi_col1:
+        rsi_window = st.number_input(
+            "Lookback period",
+            min_value=2, max_value=200, value=RSI_DEFAULT_WINDOW, step=1,
+            key="pt_rsi_window",
+        )
+    with rsi_col2:
+        rsi_freq = st.selectbox(
+            "Frequency",
+            options=["Daily", "Weekly"],
+            index=0,
+            key="pt_rsi_freq",
+        )
+    with rsi_col3:
+        rsi_ob = st.number_input(
+            "Overbought",
+            min_value=50, max_value=100, value=RSI_OVERBOUGHT, step=1,
+            key="pt_rsi_ob",
+        )
+    with rsi_col4:
+        rsi_os = st.number_input(
+            "Oversold",
+            min_value=0, max_value=50, value=RSI_OVERSOLD, step=1,
+            key="pt_rsi_os",
+        )
+
+    rsi_series = compute_ratio_rsi(
+        data.ratio, window=rsi_window, frequency=rsi_freq.lower(),
+    )
+    rsi_plot = rsi_series.loc[rsi_series.index >= chart_start].dropna()
+
+    if not rsi_plot.empty:
+        fig_rsi = go.Figure()
+        fig_rsi.add_trace(go.Scatter(
+            x=rsi_plot.index, y=rsi_plot.values,
+            name="RSI", line=dict(width=2, color="#3b82f6"),
+        ))
+        # Overbought / oversold bands
+        fig_rsi.add_hline(
+            y=rsi_ob, line_dash="dash", line_color="#ef4444",
+            annotation_text=f"Overbought ({rsi_ob})",
+            annotation_position="top left",
+        )
+        fig_rsi.add_hline(
+            y=rsi_os, line_dash="dash", line_color="#22c55e",
+            annotation_text=f"Oversold ({rsi_os})",
+            annotation_position="bottom left",
+        )
+        fig_rsi.add_hline(y=50, line_dash="dot", line_color="#9ca3af")
+        fig_rsi.update_layout(
+            title=(
+                f"{data.ticker_a}/{data.ticker_b} Ratio RSI"
+                f" ({rsi_window}-{rsi_freq.lower()})"
+            ),
+            yaxis_title="RSI",
+            yaxis=dict(range=[0, 100]),
+            height=340,
+            margin=dict(t=40, b=30),
+            legend=dict(orientation="h", y=-0.15),
+        )
+        st.plotly_chart(fig_rsi, use_container_width=True)
+
+        # Current reading
+        current_rsi = rsi_plot.iloc[-1]
+        if current_rsi >= rsi_ob:
+            rsi_status = "Overbought"
+            rsi_delta_color = "inverse"
+        elif current_rsi <= rsi_os:
+            rsi_status = "Oversold"
+            rsi_delta_color = "normal"
+        else:
+            rsi_status = "Neutral"
+            rsi_delta_color = "off"
+        st.metric(
+            "Current RSI",
+            f"{current_rsi:.1f}",
+            delta=rsi_status,
+            delta_color=rsi_delta_color,
+        )
+    else:
+        st.warning("Not enough data to compute RSI for the selected parameters.")
 
     st.markdown("---")
 
