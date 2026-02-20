@@ -29,6 +29,7 @@ from pair_analysis import (
     current_sma_readings,
     compute_ratio_rsi,
     compute_ratio_bollinger,
+    compute_forward_returns,
     compute_rolling_ratio_returns,
     compute_zscore_table,
     compute_ratio_volatility,
@@ -370,9 +371,119 @@ def render_pair_trends_page() -> None:
     st.markdown("---")
 
     # ------------------------------------------------------------------
-    # Section 2: Z-Scores of Non-Overlapping Returns
+    # Section 2: Forward Return Backtest
     # ------------------------------------------------------------------
-    st.header("2. Z-Scores of Non-Overlapping Returns")
+    st.header("2. Forward Return Backtest")
+
+    st.info(
+        "Select a historical entry date to see how **"
+        f"{data.ticker_a}** and **{data.ticker_b}** performed going "
+        "forward. Both assets are rebased to 100 on the entry date."
+    )
+
+    data_min = data.price_a.index.min().date()
+    data_max = data.price_a.index.max().date()
+    bt_entry = st.date_input(
+        "Entry date",
+        value=data_min,
+        min_value=data_min,
+        max_value=data_max,
+        key="pt_bt_entry",
+    )
+
+    bt_result = compute_forward_returns(
+        data.price_a, data.price_b, pd.Timestamp(bt_entry),
+    )
+
+    if bt_result is not None:
+        st.caption(
+            f"Snapped to nearest trading day: "
+            f"**{bt_result.entry_date.strftime('%Y-%m-%d')}**"
+        )
+
+        # --- Rebased chart ---
+        fig_bt = go.Figure()
+        fig_bt.add_trace(go.Scatter(
+            x=bt_result.rebased_a.index,
+            y=bt_result.rebased_a.values,
+            name=data.ticker_a,
+            line=dict(width=2, color="#3b82f6"),
+        ))
+        fig_bt.add_trace(go.Scatter(
+            x=bt_result.rebased_b.index,
+            y=bt_result.rebased_b.values,
+            name=data.ticker_b,
+            line=dict(width=2, color="#ef4444"),
+        ))
+        fig_bt.add_hline(
+            y=100, line_dash="dot", line_color="#9ca3af",
+            annotation_text="Entry (100)",
+            annotation_position="top left",
+        )
+        fig_bt.update_layout(
+            title=(
+                f"{data.ticker_a} vs {data.ticker_b} — Rebased to 100 from "
+                f"{bt_result.entry_date.strftime('%Y-%m-%d')}"
+            ),
+            yaxis_title="Rebased Price",
+            height=450,
+            margin=dict(t=40, b=30),
+            legend=dict(orientation="h", y=-0.15),
+            xaxis=dict(
+                rangeselector=dict(
+                    buttons=[
+                        dict(count=1, label="1M", step="month", stepmode="backward"),
+                        dict(count=3, label="3M", step="month", stepmode="backward"),
+                        dict(count=6, label="6M", step="month", stepmode="backward"),
+                        dict(count=1, label="1Y", step="year", stepmode="backward"),
+                        dict(count=3, label="3Y", step="year", stepmode="backward"),
+                        dict(count=5, label="5Y", step="year", stepmode="backward"),
+                        dict(step="all", label="All"),
+                    ],
+                ),
+                rangeslider=dict(visible=True),
+            ),
+        )
+        st.plotly_chart(fig_bt, use_container_width=True)
+
+        # --- Forward returns table ---
+        available_rows = [r for r in bt_result.rows if r.return_a is not None]
+        if available_rows:
+            table_data = []
+            for r in available_rows:
+                row = {
+                    "Period": r.period,
+                    "End Date": r.end_date,
+                    f"{data.ticker_a}": f"{r.return_a:+.2%}",
+                    f"{data.ticker_b}": f"{r.return_b:+.2%}",
+                    "Spread": f"{r.spread:+.2%}",
+                }
+                if r.annualized_a is not None:
+                    row[f"{data.ticker_a} Ann."] = f"{r.annualized_a:+.2%}"
+                    row[f"{data.ticker_b} Ann."] = f"{r.annualized_b:+.2%}"
+                    row["Spread Ann."] = f"{r.annualized_spread:+.2%}"
+                table_data.append(row)
+
+            bt_df = pd.DataFrame(table_data)
+            st.dataframe(bt_df, use_container_width=True, hide_index=True)
+        else:
+            st.warning("No forward horizon data available from this entry date.")
+
+        # Unavailable horizons note
+        unavailable = [r.period for r in bt_result.rows if r.return_a is None]
+        if unavailable:
+            st.caption(
+                f"Insufficient forward data for: {', '.join(unavailable)}"
+            )
+    else:
+        st.warning("Could not compute forward returns for the selected date.")
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------------
+    # Section 3: Z-Scores of Non-Overlapping Returns
+    # ------------------------------------------------------------------
+    st.header("3. Z-Scores of Non-Overlapping Returns")
 
     st.info(
         "**Non-overlapping returns** are sampled at period ends to eliminate serial "
@@ -418,9 +529,9 @@ def render_pair_trends_page() -> None:
     st.markdown("---")
 
     # ------------------------------------------------------------------
-    # Section 2b: Three-Layer Signal Framework
+    # Section 3b: Three-Layer Signal Framework
     # ------------------------------------------------------------------
-    st.header("2b. Multi-Layer Signal Framework")
+    st.header("3b. Multi-Layer Signal Framework")
 
     st.markdown(
         """
@@ -567,9 +678,9 @@ def render_pair_trends_page() -> None:
     st.markdown("---")
 
     # ------------------------------------------------------------------
-    # Section 3: Volatility of the Ratio
+    # Section 4: Volatility of the Ratio
     # ------------------------------------------------------------------
-    st.header("3. Volatility of the Ratio")
+    st.header("4. Volatility of the Ratio")
 
     vol_df = compute_ratio_volatility(data.ratio)
     vol_plot = vol_df.loc[vol_df.index >= chart_start]
@@ -611,9 +722,9 @@ def render_pair_trends_page() -> None:
     st.markdown("---")
 
     # ------------------------------------------------------------------
-    # Section 4: Return Dispersion
+    # Section 5: Return Dispersion
     # ------------------------------------------------------------------
-    st.header("4. Return Dispersion")
+    st.header("5. Return Dispersion")
 
     disp_rows = compute_dispersion_table(data.price_a, data.price_b)
     if disp_rows:

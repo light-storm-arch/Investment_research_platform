@@ -161,6 +161,42 @@ class SignalState:
     ticker_b: str
 
 
+@dataclass
+class ForwardReturnRow:
+    """Single horizon row for the forward return backtest table."""
+
+    period: str  # e.g. "1M", "3M", "1Y"
+    end_date: str | None  # actual end date used, or None if unavailable
+    return_a: float | None  # simple % return for ticker A
+    return_b: float | None  # simple % return for ticker B
+    spread: float | None  # return_a - return_b
+    annualized_a: float | None  # annualized return (1Y+ only)
+    annualized_b: float | None
+    annualized_spread: float | None
+
+
+@dataclass
+class ForwardReturnResult:
+    """Full result container for the forward return backtest."""
+
+    entry_date: pd.Timestamp
+    rebased_a: pd.Series  # price_a rebased to 100 from entry_date
+    rebased_b: pd.Series  # price_b rebased to 100 from entry_date
+    rows: list[ForwardReturnRow]
+
+
+# Forward return horizons: label -> (trading days, calendar years for annualizing)
+FORWARD_HORIZONS: dict[str, tuple[int, float | None]] = {
+    "1M": (21, None),
+    "3M": (63, None),
+    "6M": (126, None),
+    "1Y": (252, 1.0),
+    "3Y": (756, 3.0),
+    "5Y": (1260, 5.0),
+    "10Y": (2520, 10.0),
+}
+
+
 # ---------------------------------------------------------------------------
 # Data fetching
 # ---------------------------------------------------------------------------
@@ -331,7 +367,117 @@ def compute_ratio_bollinger(
 
 
 # ---------------------------------------------------------------------------
-# Section 2: Z-Scores of Rolling Returns
+# Section 2: Forward Return Backtest
+# ---------------------------------------------------------------------------
+
+def _snap_to_trading_day(
+    target: pd.Timestamp,
+    index: pd.DatetimeIndex,
+) -> pd.Timestamp | None:
+    """Return the nearest trading day in *index* on or after *target*.
+
+    Falls back to the last available date if *target* is beyond the range.
+    Returns ``None`` if the index is empty.
+    """
+    if index.empty:
+        return None
+    on_or_after = index[index >= target]
+    if not on_or_after.empty:
+        return on_or_after[0]
+    return index[-1]
+
+
+def compute_forward_returns(
+    price_a: pd.Series,
+    price_b: pd.Series,
+    entry_date: pd.Timestamp,
+) -> ForwardReturnResult | None:
+    """Compute forward performance for both assets from an entry date.
+
+    Args:
+        price_a: Adjusted close prices for ticker A.
+        price_b: Adjusted close prices for ticker B.
+        entry_date: The user-selected entry date (will snap to nearest
+            available trading day on or after this date).
+
+    Returns:
+        ForwardReturnResult with rebased price series and a row per
+        forward horizon, or ``None`` if the entry date falls outside the
+        available data range.
+    """
+    common_idx = price_a.index.intersection(price_b.index)
+    if common_idx.empty:
+        return None
+
+    snapped = _snap_to_trading_day(entry_date, common_idx)
+    if snapped is None:
+        return None
+
+    fwd_a = price_a.loc[snapped:]
+    fwd_b = price_b.loc[snapped:]
+    if fwd_a.empty or fwd_b.empty:
+        return None
+
+    base_a = fwd_a.iloc[0]
+    base_b = fwd_b.iloc[0]
+    rebased_a = (fwd_a / base_a) * 100
+    rebased_b = (fwd_b / base_b) * 100
+
+    rows: list[ForwardReturnRow] = []
+    for label, (tdays, years) in FORWARD_HORIZONS.items():
+        if len(fwd_a) <= tdays:
+            # Not enough data for this horizon — record as unavailable
+            rows.append(ForwardReturnRow(
+                period=label,
+                end_date=None,
+                return_a=None,
+                return_b=None,
+                spread=None,
+                annualized_a=None,
+                annualized_b=None,
+                annualized_spread=None,
+            ))
+            continue
+
+        end_a = fwd_a.iloc[tdays]
+        end_b = fwd_b.iloc[tdays]
+        end_date = fwd_a.index[tdays].strftime("%Y-%m-%d")
+
+        ret_a = end_a / base_a - 1
+        ret_b = end_b / base_b - 1
+        spread = ret_a - ret_b
+
+        # Annualize for horizons >= 1Y
+        if years is not None and years >= 1.0:
+            ann_a = (1 + ret_a) ** (1 / years) - 1
+            ann_b = (1 + ret_b) ** (1 / years) - 1
+            ann_spread = ann_a - ann_b
+        else:
+            ann_a = None
+            ann_b = None
+            ann_spread = None
+
+        rows.append(ForwardReturnRow(
+            period=label,
+            end_date=end_date,
+            return_a=ret_a,
+            return_b=ret_b,
+            spread=spread,
+            annualized_a=ann_a,
+            annualized_b=ann_b,
+            annualized_spread=ann_spread,
+        ))
+
+    return ForwardReturnResult(
+        entry_date=snapped,
+        rebased_a=rebased_a,
+        rebased_b=rebased_b,
+        rows=rows,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 3: Z-Scores of Rolling Returns
 # ---------------------------------------------------------------------------
 
 def compute_rolling_ratio_returns(ratio: pd.Series) -> dict[str, pd.Series]:
