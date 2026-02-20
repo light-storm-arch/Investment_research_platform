@@ -253,6 +253,10 @@ RSI_DEFAULT_WINDOW = 14
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
 
+# Bollinger Bands defaults
+BB_DEFAULT_WINDOW = 20
+BB_DEFAULT_NUM_STD = 2.0
+
 
 def compute_ratio_rsi(
     ratio: pd.Series,
@@ -280,6 +284,50 @@ def compute_ratio_rsi(
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
+
+
+# ---------------------------------------------------------------------------
+# Section 1c: Bollinger Bands of the Ratio
+# ---------------------------------------------------------------------------
+
+def compute_ratio_bollinger(
+    ratio: pd.Series,
+    window: int = BB_DEFAULT_WINDOW,
+    num_std: float = BB_DEFAULT_NUM_STD,
+    frequency: str = "daily",
+) -> pd.DataFrame:
+    """Compute Bollinger Bands on the log price ratio series.
+
+    Args:
+        ratio: Log price ratio series (log(A/B)).
+        window: Moving average lookback period (number of bars). Default 20.
+        num_std: Number of standard deviations for band width. Default 2.0.
+        frequency: ``"daily"`` uses daily closes; ``"weekly"`` resamples
+            to Friday closes before computing bands.
+
+    Returns:
+        DataFrame with columns: Log Ratio, Middle Band, Upper Band,
+        Lower Band, Percent B.
+    """
+    series = ratio.copy()
+    if frequency == "weekly":
+        series = series.resample("W-FRI").last().dropna()
+
+    middle = series.rolling(window).mean()
+    rolling_std = series.rolling(window).std()
+    upper = middle + num_std * rolling_std
+    lower = middle - num_std * rolling_std
+
+    band_width = upper - lower
+    percent_b = (series - lower) / band_width
+
+    return pd.DataFrame({
+        "Log Ratio": series,
+        "Middle Band": middle,
+        "Upper Band": upper,
+        "Lower Band": lower,
+        "Percent B": percent_b,
+    })
 
 
 # ---------------------------------------------------------------------------
