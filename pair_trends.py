@@ -21,11 +21,14 @@ from pair_analysis import (
     RSI_DEFAULT_WINDOW,
     RSI_OVERBOUGHT,
     RSI_OVERSOLD,
+    BB_DEFAULT_WINDOW,
+    BB_DEFAULT_NUM_STD,
     fetch_pair,
     compute_sma,
     compute_sma_slopes,
     current_sma_readings,
     compute_ratio_rsi,
+    compute_ratio_bollinger,
     compute_rolling_ratio_returns,
     compute_zscore_table,
     compute_ratio_volatility,
@@ -265,6 +268,104 @@ def render_pair_trends_page() -> None:
         )
     else:
         st.warning("Not enough data to compute RSI for the selected parameters.")
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------------
+    # Section 1c: Bollinger Bands
+    # ------------------------------------------------------------------
+    st.header("1c. Bollinger Bands")
+
+    st.info(
+        "**Bollinger Bands** applied to the log price ratio. "
+        "When the ratio trades above the upper band, "
+        f"**{data.ticker_a}** may be overextended relative to **{data.ticker_b}**; "
+        "when below the lower band, the reverse may hold."
+    )
+
+    bb_col1, bb_col2, bb_col3 = st.columns(3)
+    with bb_col1:
+        bb_window = st.number_input(
+            "MA period",
+            min_value=5, max_value=200, value=BB_DEFAULT_WINDOW, step=1,
+            key="pt_bb_window",
+        )
+    with bb_col2:
+        bb_freq = st.selectbox(
+            "Frequency",
+            options=["Daily", "Weekly"],
+            index=0,
+            key="pt_bb_freq",
+        )
+    with bb_col3:
+        bb_num_std = st.number_input(
+            "Band width (σ)",
+            min_value=0.5, max_value=4.0, value=BB_DEFAULT_NUM_STD, step=0.1,
+            format="%.1f",
+            key="pt_bb_std",
+        )
+
+    bb_df = compute_ratio_bollinger(
+        data.ratio,
+        window=bb_window,
+        num_std=bb_num_std,
+        frequency=bb_freq.lower(),
+    )
+    bb_plot = bb_df.loc[bb_df.index >= chart_start].dropna()
+
+    if not bb_plot.empty:
+        fig_bb = go.Figure()
+
+        # Shaded band region (upper band drawn first, lower as fill-to)
+        fig_bb.add_trace(go.Scatter(
+            x=bb_plot.index, y=bb_plot["Upper Band"],
+            name="Upper Band", line=dict(width=1, color="#ef4444", dash="dash"),
+        ))
+        fig_bb.add_trace(go.Scatter(
+            x=bb_plot.index, y=bb_plot["Lower Band"],
+            name="Lower Band", line=dict(width=1, color="#22c55e", dash="dash"),
+            fill="tonexty", fillcolor="rgba(99,102,241,0.08)",
+        ))
+        fig_bb.add_trace(go.Scatter(
+            x=bb_plot.index, y=bb_plot["Middle Band"],
+            name="Middle Band", line=dict(width=1.5, color="#9ca3af", dash="dot"),
+        ))
+        fig_bb.add_trace(go.Scatter(
+            x=bb_plot.index, y=bb_plot["Log Ratio"],
+            name="Log Ratio", line=dict(width=2, color="#3b82f6"),
+        ))
+
+        fig_bb.update_layout(
+            title=(
+                f"{data.ticker_a}/{data.ticker_b} Log Ratio — Bollinger Bands"
+                f" ({bb_window}-{bb_freq.lower()}, {bb_num_std:.1f}σ)"
+            ),
+            yaxis_title="Log Ratio",
+            height=420,
+            margin=dict(t=40, b=30),
+            legend=dict(orientation="h", y=-0.15),
+        )
+        st.plotly_chart(fig_bb, use_container_width=True)
+
+        # Current reading
+        current_pctb = bb_plot["Percent B"].iloc[-1]
+        if current_pctb > 1.0:
+            bb_status = "Above Upper Band"
+            bb_delta_color = "inverse"
+        elif current_pctb < 0.0:
+            bb_status = "Below Lower Band"
+            bb_delta_color = "normal"
+        else:
+            bb_status = "Within Bands"
+            bb_delta_color = "off"
+        st.metric(
+            "Current %B",
+            f"{current_pctb:.2f}",
+            delta=bb_status,
+            delta_color=bb_delta_color,
+        )
+    else:
+        st.warning("Not enough data to compute Bollinger Bands for the selected parameters.")
 
     st.markdown("---")
 
