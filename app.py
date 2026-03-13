@@ -409,10 +409,12 @@ elif page == "Watchlist Alerts":
     )
 
     DEFAULT_WATCHLIST = [
-        "SPY", "QQQ", "IWM", "DIA",
-        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-        "XLF", "XLE", "XLV", "XLK",
-        "TLT", "HYG", "GLD", "USO",
+        "SPY", "QQQ", "IWM", "DIA",                                 # Major US indices
+        "VT", "VOO", "VEA", "VWO", "EFA", "EEM",                    # Broad / international equity
+        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",   # Mega cap
+        "XLF", "XLE", "XLV", "XLK",                                 # Sectors
+        "VNQ",                                                       # Real estate
+        "TLT", "HYG", "GLD", "USO", "BND",                         # Bonds, gold, oil
     ]
 
     # --- Sidebar controls ---
@@ -428,6 +430,18 @@ elif page == "Watchlist Alerts":
         tickers = [t.strip().upper() for t in custom_input.replace("\n", ",").split(",") if t.strip()]
     else:
         tickers = DEFAULT_WATCHLIST
+
+    # --- Ticker search / add ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Search Ticker")
+    search_input = st.sidebar.text_input(
+        "Add ticker(s) not in the preset list",
+        placeholder="e.g. SCHD, ARKK, VTI",
+        help="Enter one or more comma-separated ticker symbols to append to the current watchlist.",
+    )
+    if search_input.strip():
+        extra = [t.strip().upper() for t in search_input.replace("\n", ",").split(",") if t.strip()]
+        tickers = list(dict.fromkeys(tickers + extra))  # deduplicate, preserve order
 
     st.sidebar.markdown(f"**Scanning {len(tickers)} securities**")
 
